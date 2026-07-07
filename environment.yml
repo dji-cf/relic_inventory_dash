@@ -1,0 +1,24 @@
+# Streamlit-in-Snowflake (SiS) dependency spec — the SiS equivalent of the
+# pyproject.toml + Dockerfile used by the SPCS build.
+#
+# SiS rules (docs.snowflake.com/.../streamlit/app-development/dependency-management):
+#   • the ONLY allowed channel is `snowflake` (the Snowflake Anaconda channel)
+#   • no pip / no relative paths — everything must exist in that channel
+#   • pin with a single `=` (Snowflake recommends pinning Streamlit so the app
+#     isn't silently upgraded)
+#   • do NOT pin `python` here — the Python version is chosen at the app level
+#     (SiS default is 3.11, which this app targets)
+#
+# snowflake-snowpark-python is the in-DB session driver; it replaces
+# snowflake-connector-python from pyproject.toml (not needed / not used in SiS).
+name: vault_inv_dash
+channels:
+  - snowflake
+dependencies:
+  # Newest SiS-supported Streamlit line (added Nov 2025 GA; range is 1.22–1.52).
+  # Covers every API this app uses: st.segmented_control, st.html, width="stretch".
+  - streamlit=1.51.0
+  - pandas=2.*
+  - altair=5.*
+  - openpyxl               # xlsx export in streamlit_app.to_excel (CSV fallback if absent)
+  - snowflake-snowpark-python

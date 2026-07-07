@@ -1,0 +1,22 @@
+[project]
+name = "vault-inv-dash"
+version = "0.1.0"
+description = "FCT Relic inventory dashboard — Streamlit recreation of the HTML template, computed on-hand snapshot over Oracle relic spend views."
+requires-python = ">=3.11"
+dependencies = [
+    "streamlit>=1.57",
+    "snowflake-snowpark-python",
+    "snowflake-connector-python",
+    "pandas>=2.0",
+    "altair>=5",
+    "openpyxl>=3.1",
+]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+# Flat-layout app (not a library): declare the modules explicitly so an editable
+# install (pip install -e .) doesn't fail auto-discovery.
+[tool.setuptools]
+py-modules = ["streamlit_app", "queries", "data", "transforms", "style", "charts", "interactive"]

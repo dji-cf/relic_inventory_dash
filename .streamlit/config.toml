@@ -1,0 +1,25 @@
+[theme]
+base = "light"
+primaryColor = "#4d7ab8"
+backgroundColor = "#f0f2f5"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#1a2b4a"
+borderColor = "#e2e8f0"
+linkColor = "#4d7ab8"
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+headingFont = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@600;700&display=swap"
+baseFontSize = 14
+baseRadius = "8px"
+
+# Brand / status palette (matches the source HTML :root vars)
+blueColor = "#4d7ab8"
+greenColor = "#16a34a"
+redColor = "#dc2626"
+orangeColor = "#b5822a"
+violetColor = "#8b5cf6"
+grayColor = "#6b7fa3"
+
+chartCategoricalColors = ["#4d7ab8", "#16a34a", "#dc2626", "#8b5cf6", "#b5822a", "#5a8a6a", "#a06090", "#608090", "#8b6a3e", "#2563eb"]
+
+[server]
+runOnSave = true

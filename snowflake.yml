@@ -1,0 +1,40 @@
+# Snowflake CLI project definition — deploys the dashboard to
+# Streamlit-in-Snowflake (warehouse runtime: no compute pool, no Docker).
+#
+#   snow --version >= 3          # older CLIs use definition_version 1
+#   cd vault_inv_dash            # the folder with streamlit_app.py
+#   snow streamlit deploy --replace --open
+#
+# The command uploads the `artifacts` below to `stage`, (re)creates the STREAMLIT
+# object, and prints its URL. Database/schema come from your `snow` connection's
+# defaults unless you qualify `identifier` (see the mapping form below).
+definition_version: 2
+entities:
+  vault_inv_dash:
+    type: streamlit
+    # Fully qualified because the FANATICS_COLLECTIBLES_PROD connection sets no
+    # default database/schema. Deployed into ORACLE_DATA_PROD.SANDBOX, where the
+    # POWER_ANALYST_ORACLE_PROD role already owns Streamlit apps and can read the
+    # relic views + use ANALYTICS_WAREHOUSE. Deploy with:
+    #   snow streamlit deploy --replace --open --role POWER_ANALYST_ORACLE_PROD
+    # (the connection's default role, SVC_CLAUDE_MCP_ROLE, lacks these grants).
+    identifier:
+      name: VAULT_INV_DASH
+      database: ORACLE_DATA_PROD
+      schema: SANDBOX
+    title: "FCT Relic — Inventory Dashboard"
+    stage: streamlit_stage            # created automatically if it doesn't exist
+    query_warehouse: ANALYTICS_WAREHOUSE   # keep in sync with data.py::_WAREHOUSE
+    main_file: streamlit_app.py
+    artifacts:
+      - streamlit_app.py
+      - charts.py
+      - data.py
+      - interactive.py
+      - queries.py
+      - style.py
+      - transforms.py
+      - environment.yml
+      # SiS honors only a subset of config.toml (theme) and ignores [server].
+      # Included so the theme applies where supported; remove if it causes issues.
+      - .streamlit/config.toml
