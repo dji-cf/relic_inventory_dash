@@ -1,7 +1,10 @@
 """Pure-pandas aggregation / drill-down logic mirroring the source HTML dashboard.
 
 Every figure is split across three item types — WHOLE / NON-WHOLE / CUT SIG —
-each with QTY, distinct-SUBJECT count, and VALUE, plus a TOTAL VALUE.
+each with QTY, distinct-SUBJECT count, and VALUE, plus a TOTAL VALUE. Rollups
+additionally carry ADDITIVE slated/unslated and aging columns (EXT_COLS) so the
+OTHER row and table footers stay exact under any fold; ratio figures (avg age,
+% of value 12+) are derived from those sums at render time, never stored.
 """
 from __future__ import annotations
 
@@ -11,7 +14,36 @@ import pandas as pd
 # itype value -> column prefix
 TYPES = {"WHOLE": "w", "NON-WHOLE": "nw", "CUT SIG": "cs"}
 ROLLUP_COLS = ["wq", "ws", "wv", "nwq", "nws", "nwv", "csq", "css", "csv", "tv"]
+# Additive extension columns (sums only — see module docstring):
+#   slv / uslv : slated / unslated value (obsolete counts in neither)
+#   agev / av  : Σ(valuation × age_months) and Σ(valuation) over KNOWN ages only,
+#                so avg age = agev/av excludes NULL-age value from both sides
+#   v12        : valuation in the oldest age bucket (NULL age folds in here)
+EXT_COLS = ["slv", "uslv", "agev", "av", "v12"]
 FT_OTHER_THRESHOLD = 25_000
+
+STATUS_LABELS = {"U": "UNSLATED", "S": "SLATED", "O": "OBSOLETE"}
+
+# ── item aging (shared data-layer + transforms contract) ──────────────────────
+# Left-closed month buckets. The oldest bucket is labelled "/ pre-window" because
+# the data window opens ~2025-05, so items on hand at the open have a censored
+# (lower-bound) age. See queries.item_age_cte for the swappable age basis.
+AGE_EDGES = [0, 3, 6, 9, 12, np.inf]
+AGE_LABELS = ["0-3", "3-6", "6-9", "9-12", "12+ / pre-window"]
+
+
+def age_bucket(months: pd.Series) -> pd.Series:
+    """Bucket item age (in months) into ``AGE_LABELS`` (left-closed bins).
+
+    NULL age -- an on-hand item with no procurement row, currently none in the
+    data -- is folded into the oldest bucket so BY-AGE rollups still reconcile to
+    the portfolio total (a missing date never drops value). Value-weighted
+    avg-age math elsewhere separately excludes NULL-age valuation so the mean is
+    not distorted by an unknown date.
+    """
+    s = pd.to_numeric(months, errors="coerce")
+    cut = pd.cut(s, bins=AGE_EDGES, labels=AGE_LABELS, right=False)
+    return cut.fillna(AGE_LABELS[-1])
 
 
 # ── formatting ──────────────────────────────────────────────────────────────
@@ -50,6 +82,20 @@ def _typed_value_cols(df):
         m = g["itype"] == t
         g[f"{p}q"] = np.where(m, g["qty_onhand"], 0.0)
         g[f"{p}v"] = np.where(m, g["valuation"], 0.0)
+    g["slv"] = np.where(g["status"] == "S", g["valuation"], 0.0)
+    g["uslv"] = np.where(g["status"] == "U", g["valuation"], 0.0)
+    if "age_months" in g.columns:
+        # age_months is Int64-nullable: mask first, multiply on a float copy
+        age = pd.to_numeric(g["age_months"], errors="coerce").astype("float64")
+        known = age.notna().to_numpy()
+        g["agev"] = np.where(known, g["valuation"] * age.fillna(0.0), 0.0)
+        g["av"] = np.where(known, g["valuation"], 0.0)
+        g["v12"] = np.where(g["age_bucket"].astype(str) == AGE_LABELS[-1],
+                            g["valuation"], 0.0)
+    else:  # frames without aging (e.g. a history month) still roll up cleanly
+        g["agev"] = 0.0
+        g["av"] = 0.0
+        g["v12"] = 0.0
     return g
 
 
@@ -61,24 +107,27 @@ def _subject_counts(g, dim):
         if sub.empty:
             counts[f"{p}s"] = pd.Series(dtype=int)
             continue
-        per = sub.groupby([dim, "subj_key"], dropna=False)["qty_onhand"].sum().reset_index()
+        per = (sub.groupby([dim, "subj_key"], dropna=False, observed=False)
+               ["qty_onhand"].sum().reset_index())
         per = per[per["qty_onhand"] > 0]
-        counts[f"{p}s"] = per.groupby(dim)["subj_key"].nunique()
+        counts[f"{p}s"] = per.groupby(dim, observed=False)["subj_key"].nunique()
     return counts
 
 
 def rollup(df, dim) -> pd.DataFrame:
     """Group ``df`` by ``dim`` into the standard 3-type rollup table."""
-    empty = pd.DataFrame(columns=[dim] + ROLLUP_COLS)
+    empty = pd.DataFrame(columns=[dim] + ROLLUP_COLS + EXT_COLS)
     if df.empty:
         return empty
     g = _typed_value_cols(df)
     base = (
-        g.groupby(dim, dropna=False)
+        g.groupby(dim, dropna=False, observed=False)
         .agg(
             wq=("wq", "sum"), wv=("wv", "sum"),
             nwq=("nwq", "sum"), nwv=("nwv", "sum"),
             csq=("csq", "sum"), csv=("csv", "sum"),
+            slv=("slv", "sum"), uslv=("uslv", "sum"),
+            agev=("agev", "sum"), av=("av", "sum"), v12=("v12", "sum"),
         )
     )
     counts = _subject_counts(g, dim)
@@ -89,7 +138,7 @@ def rollup(df, dim) -> pd.DataFrame:
     base = base.reset_index()
     base["tv"] = base["wv"] + base["nwv"] + base["csv"]
     base = base.sort_values("tv", ascending=False).reset_index(drop=True)
-    return base[[dim] + ROLLUP_COLS]
+    return base[[dim] + ROLLUP_COLS + EXT_COLS]
 
 
 def collapse_other(roll, dim, threshold=FT_OTHER_THRESHOLD):
@@ -100,23 +149,26 @@ def collapse_other(roll, dim, threshold=FT_OTHER_THRESHOLD):
     other = roll[roll["tv"] < threshold]
     if other.empty:
         return roll
-    agg = {c: other[c].sum() for c in ROLLUP_COLS}
+    # every non-dim column is additive, so a plain sum keeps the OTHER row exact
+    agg = {c: other[c].sum() for c in roll.columns if c != dim}
     agg[dim] = f"OTHER ({len(other)} form types)"
     return pd.concat([main, pd.DataFrame([agg])], ignore_index=True)
 
 
 def subject_rollup(sub) -> pd.DataFrame:
     """One row per (brand, subject) with the 3-type split. Used in drill panels."""
-    cols = ["brand", "subject_name", "subj_key"] + ROLLUP_COLS
+    cols = ["brand", "subject_name", "subj_key"] + ROLLUP_COLS + EXT_COLS
     if sub.empty:
         return pd.DataFrame(columns=cols)
     g = _typed_value_cols(sub)
     base = (
-        g.groupby(["brand", "subject_name", "subj_key"], dropna=False)
+        g.groupby(["brand", "subject_name", "subj_key"], dropna=False, observed=False)
         .agg(
             wq=("wq", "sum"), wv=("wv", "sum"),
             nwq=("nwq", "sum"), nwv=("nwv", "sum"),
             csq=("csq", "sum"), csv=("csv", "sum"),
+            slv=("slv", "sum"), uslv=("uslv", "sum"),
+            agev=("agev", "sum"), av=("av", "sum"), v12=("v12", "sum"),
         )
         .reset_index()
     )
@@ -127,19 +179,32 @@ def subject_rollup(sub) -> pd.DataFrame:
     return base.sort_values("tv", ascending=False).reset_index(drop=True)[cols]
 
 
+def _join_programs(s: pd.Series) -> str:
+    vals = sorted(str(v) for v in s.dropna().unique())
+    return " / ".join(vals) if vals else "—"
+
+
 def items_for(df, brand, subject) -> pd.DataFrame:
-    """Item-grain detail for a brand+subject (collapses subinventory bins)."""
+    """Item × status grain detail for a brand+subject.
+
+    One row per (item, status): a part-slated item shows its unslated and slated
+    qty/value as separate rows so a picklist export states exactly how much is
+    available vs. committed. Rows for one item stay adjacent (sorted by the
+    item's total value, then item, then status).
+    """
     g = df[(df["brand"] == brand) & (df["subject_name"] == subject)]
     cols = ["item_number", "team", "relic_form_type", "item_used_status",
-            "qty_onhand", "unit_cost", "valuation"]
+            "status", "program", "age_months", "qty_onhand", "unit_cost", "valuation"]
     if g.empty:
         return pd.DataFrame(columns=cols)
     out = (
-        g.groupby("item_number", dropna=False)
+        g.groupby(["item_number", "status"], dropna=False, observed=False)
         .agg(
             team=("team", "first"),
             relic_form_type=("relic_form_type", "first"),
             item_used_status=("item_used_status", "first"),
+            program=("program", _join_programs),
+            age_months=("age_months", "first"),
             qty_onhand=("qty_onhand", "sum"),
             valuation=("valuation", "sum"),
         )
@@ -147,7 +212,13 @@ def items_for(df, brand, subject) -> pd.DataFrame:
     )
     out["unit_cost"] = np.where(out["qty_onhand"] != 0,
                                 out["valuation"] / out["qty_onhand"], 0.0)
-    return out.sort_values("valuation", ascending=False).reset_index(drop=True)[cols]
+    item_tv = out.groupby("item_number")["valuation"].transform("sum")
+    out = (out.assign(_itv=item_tv)
+           .sort_values(["_itv", "item_number", "status"],
+                        ascending=[False, True, True])
+           .drop(columns="_itv")
+           .reset_index(drop=True))
+    return out[cols]
 
 
 def program_breakdown(df, brand, subject) -> pd.DataFrame:
@@ -155,7 +226,7 @@ def program_breakdown(df, brand, subject) -> pd.DataFrame:
     g = df[(df["brand"] == brand) & (df["subject_name"] == subject)
            & (df["status"] == "S")].copy()
     if g.empty:
-        return pd.DataFrame(columns=["program"] + ROLLUP_COLS)
+        return pd.DataFrame(columns=["program"] + ROLLUP_COLS + EXT_COLS)
     g["program"] = g["program"].fillna("NO PROGRAM")
     return rollup(g, "program")
 
@@ -186,34 +257,175 @@ def stat_cards(df) -> dict:
 
 
 def totals_row(roll) -> dict:
-    return {c: roll[c].sum() for c in ROLLUP_COLS}
+    return {c: roll[c].sum() for c in ROLLUP_COLS + EXT_COLS if c in roll.columns}
 
 
-# ── trends ────────────────────────────────────────────────────────────────────
-def portfolio_totals(df) -> dict:
-    return {
-        "total": float(df["valuation"].sum()),
-        "whole": float(df[df["itype"] == "WHOLE"]["valuation"].sum()),
-        "nonwhole": float(df[df["itype"] == "NON-WHOLE"]["valuation"].sum()),
-        "cutsig": float(df[df["itype"] == "CUT SIG"]["valuation"].sum()),
-    }
+# ── multi-month history (TRENDS tab + INVENTORY sparklines) ───────────────────
+def history_long(hist, dim, metric, months) -> pd.DataFrame:
+    """Long frame ``[dim, month, value]`` with the month × category grid completed.
+
+    ``metric`` is ``valuation`` or ``qty_onhand``. A category/month pair with no
+    on-hand rows is a TRUE ZERO (the history query's HAVING drops zero bins), so
+    the grid is completed with 0 — never forward-filled or dropped.
+    """
+    if hist.empty:
+        return pd.DataFrame(columns=[dim, "month", "value"])
+    wide = (hist.groupby([dim, "month"], dropna=False, observed=True)[metric]
+            .sum().unstack("month", fill_value=0.0)
+            .reindex(columns=list(months), fill_value=0.0))
+    long = wide.stack().rename("value").reset_index()
+    long.columns = [dim, "month", "value"]
+    long[dim] = long[dim].astype(str)
+    long["month"] = long["month"].astype(str)
+    return long
 
 
-def subject_movers(df_a, df_b):
-    """(gainers, losers) DataFrames of subject-level total-value change A -> B."""
-    a = df_a.groupby(["brand", "subject_name"])["valuation"].sum().rename("prev")
-    b = df_b.groupby(["brand", "subject_name"])["valuation"].sum().rename("curr")
-    m = pd.concat([a, b], axis=1).fillna(0.0).reset_index()
-    m["delta"] = m["curr"] - m["prev"]
-    m = m[m["delta"].abs() > 0].sort_values("delta", ascending=False)
-    gainers = m.head(10).reset_index(drop=True)
-    losers = m.tail(10).sort_values("delta").reset_index(drop=True)
-    return gainers, losers
+def top_n_other(long_df, dim, n, rank_month):
+    """Keep the top-``n`` categories by value at ``rank_month`` (the anchor);
+    fold the rest into one ``OTHER (k)`` series summed per month.
+
+    Returns ``(long_df, ordered_categories)`` with OTHER last.
+    """
+    if long_df.empty:
+        return long_df, []
+    rank = (long_df[long_df["month"] == rank_month]
+            .groupby(dim, observed=True)["value"].sum()
+            .sort_values(ascending=False))
+    top = [str(c) for c in rank.head(n).index]
+    is_top = long_df[dim].isin(top)
+    main = long_df[is_top].copy()
+    rest = long_df[~is_top]
+    k = rest[dim].nunique()
+    if k:
+        label = f"OTHER ({k})"
+        other = rest.groupby("month", as_index=False, observed=True)["value"].sum()
+        other[dim] = label
+        main = pd.concat([main, other[[dim, "month", "value"]]], ignore_index=True)
+        return main, top + [label]
+    return main, top
 
 
-def brand_compare(df_a, df_b, top=10):
-    a = df_a.groupby("brand")["valuation"].sum().rename("a")
-    b = df_b.groupby("brand")["valuation"].sum().rename("b")
-    m = pd.concat([a, b], axis=1).fillna(0.0)
-    m["total"] = m["a"] + m["b"]
-    return m.sort_values("total", ascending=False).head(top).drop(columns="total").reset_index()
+def mom_change(long_df, dim) -> pd.DataFrame:
+    """Add ``delta`` / ``pct`` (vs. prior month) per category; each category's
+    first month is dropped (no month-over-month basis)."""
+    if long_df.empty:
+        return long_df.assign(delta=pd.Series(dtype=float), pct=pd.Series(dtype=float))
+    out = long_df.sort_values([dim, "month"], kind="stable").copy()
+    prev = out.groupby(dim, observed=True)["value"].shift(1)
+    out["delta"] = out["value"] - prev
+    out["pct"] = np.where(prev.abs() > 0, out["delta"] / prev * 100.0, np.nan)
+    return out.dropna(subset=["delta"]).reset_index(drop=True)
+
+
+def trailing_deltas(long_df, dim, months, anchor, lags=(1, 3, 6)) -> pd.DataFrame:
+    """Per category: value at ``anchor`` plus Δ / Δ% vs. each trailing lag.
+
+    Lags are POSITIONAL steps into the sorted month spine (not date arithmetic);
+    a lag reaching before the window start yields NaN (rendered as an em dash).
+    Sorted by current value descending.
+    """
+    cols = [dim, "current"] + [f"d{k}" for k in lags] + [f"p{k}" for k in lags]
+    months = list(months)
+    if long_df.empty or anchor not in months:
+        return pd.DataFrame(columns=cols)
+    wide = (long_df.pivot_table(index=dim, columns="month", values="value",
+                                aggfunc="sum", observed=True)
+            .reindex(columns=months, fill_value=0.0).fillna(0.0))
+    idx = months.index(anchor)
+    out = pd.DataFrame({dim: wide.index.astype(str),
+                        "current": wide[anchor].to_numpy(dtype=float)})
+    for k in lags:
+        j = idx - k
+        if j >= 0:
+            base = wide[months[j]].to_numpy(dtype=float)
+            out[f"d{k}"] = out["current"] - base
+            out[f"p{k}"] = np.where(np.abs(base) > 0,
+                                    (out["current"] - base) / base * 100.0, np.nan)
+        else:
+            out[f"d{k}"] = np.nan
+            out[f"p{k}"] = np.nan
+    return out.sort_values("current", ascending=False).reset_index(drop=True)[cols]
+
+
+def sparks_for(hist_flt, key_col, months) -> dict:
+    """Per key value: ``(value series over months, window % change)``.
+
+    The series covers exactly ``months`` (pass months ≤ the as-of date so the
+    last point equals the displayed TOTAL). All-zero series are omitted (their
+    cells render empty). pct is ``(last − first_nonzero) / first_nonzero``, or
+    ``None`` when the first nonzero IS the last point (rendered as "NEW").
+    """
+    if hist_flt.empty or key_col not in hist_flt.columns:
+        return {}
+    wide = (hist_flt.groupby([key_col, "month"], dropna=False, observed=True)
+            ["valuation"].sum().unstack("month", fill_value=0.0)
+            .reindex(columns=list(months), fill_value=0.0))
+    out = {}
+    for key, row in wide.iterrows():
+        vals = [float(v) for v in row.to_list()]
+        nz = [(i, v) for i, v in enumerate(vals) if v > 0]
+        if not nz:
+            continue
+        first_i, first_v = nz[0]
+        pct = None if first_i == len(vals) - 1 else (vals[-1] - first_v) / first_v * 100.0
+        out[str(key)] = (vals, pct)
+    return out
+
+
+# ── aging summary & stale report ──────────────────────────────────────────────
+def aging_stats(df) -> dict:
+    """Headline aging figures. avg_age excludes NULL-age value from numerator
+    AND denominator (per the age_bucket contract); total_12/items_12 include
+    NULL-age rows (they fold into the oldest bucket)."""
+    total_val = float(df["valuation"].sum()) if len(df) else 0.0
+    if df.empty:
+        return {"total_val": 0.0, "total_12": 0.0, "avg_age": None,
+                "pct_unslated_12": None, "items_12": 0}
+    in12 = df["age_bucket"].astype(str) == AGE_LABELS[-1]
+    total_12 = float(df.loc[in12, "valuation"].sum())
+    age = pd.to_numeric(df["age_months"], errors="coerce").astype("float64")
+    known = age.notna()
+    av = float(df.loc[known, "valuation"].sum())
+    agev = float((df.loc[known, "valuation"] * age[known]).sum())
+    avg_age = (agev / av) if av > 0 else None
+    uns = df["status"] == "U"
+    uns_val = float(df.loc[uns, "valuation"].sum())
+    uns_12 = float(df.loc[uns & in12, "valuation"].sum())
+    pct_unslated_12 = (uns_12 / uns_val * 100.0) if uns_val > 0 else None
+    items_12 = int(df.loc[in12, "item_number"].nunique())
+    return {"total_val": total_val, "total_12": total_12, "avg_age": avg_age,
+            "pct_unslated_12": pct_unslated_12, "items_12": items_12}
+
+
+def stale_items(df, min_age, statuses) -> pd.DataFrame:
+    """Item × status grain disposition-candidate report, valuation descending.
+
+    NULL-age rows count as stale (they are by definition pre-window / unknown-
+    origin — consistent with the oldest-bucket fold); none exist in current data.
+    ``statuses`` is a set of status codes ({"U"}, {"U","S","O"}, ...).
+    """
+    age = pd.to_numeric(df["age_months"], errors="coerce")
+    g = df[(age.isna() | (age >= min_age))]
+    if statuses:
+        g = g[g["status"].isin(statuses)]
+    cols = ["item_number", "brand", "subject_name", "team", "relic_form_type",
+            "item_used_status", "status", "program", "age_months",
+            "qty_onhand", "valuation"]
+    if g.empty:
+        return pd.DataFrame(columns=cols)
+    out = (
+        g.groupby(["item_number", "status"], dropna=False, observed=False)
+        .agg(
+            brand=("brand", "first"),
+            subject_name=("subject_name", "first"),
+            team=("team", "first"),
+            relic_form_type=("relic_form_type", "first"),
+            item_used_status=("item_used_status", "first"),
+            program=("program", _join_programs),
+            age_months=("age_months", "first"),
+            qty_onhand=("qty_onhand", "sum"),
+            valuation=("valuation", "sum"),
+        )
+        .reset_index()
+    )
+    return out.sort_values("valuation", ascending=False).reset_index(drop=True)[cols]

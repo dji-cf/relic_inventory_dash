@@ -19,4 +19,4 @@ build-backend = "setuptools.build_meta"
 # Flat-layout app (not a library): declare the modules explicitly so an editable
 # install (pip install -e .) doesn't fail auto-discovery.
 [tool.setuptools]
-py-modules = ["streamlit_app", "queries", "data", "transforms", "style", "charts", "interactive"]
+py-modules = ["streamlit_app", "agent", "queries", "data", "transforms", "style", "charts", "interactive"]

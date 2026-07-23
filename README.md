@@ -55,6 +55,19 @@ python -m venv vault_inv_dash\.venv
 & vault_inv_dash\.venv\Scripts\python.exe -m pip install -e vault_inv_dash
 ```
 
+## Deploy (Streamlit in Snowflake, container runtime)
+
+The app deploys as `ORACLE_DATA_PROD.SANDBOX.VAULT_INV_DASH` on the SiS
+**container runtime**, which installs `pyproject.toml` deps from PyPI (so it
+runs Streamlit >= 1.57, not the ~1.52 warehouse-runtime ceiling). One-time
+prerequisite: a PyPI external access integration granted to the deploying role
+— see the header comments in [`snowflake.yml`](snowflake.yml).
+
+```powershell
+# from vault_inv_dash (needs snow >= 3.14)
+snow streamlit deploy --replace --open --role POWER_ANALYST_ORACLE_PROD
+```
+
 ## Files
 - `streamlit_app.py` — layout, view/tab/status routing, drill-downs
 - `queries.py` — authoritative-allocated on-hand snapshot SQL + month list
@@ -62,4 +75,7 @@ python -m venv vault_inv_dash\.venv
 - `transforms.py` — pandas rollups / drill-downs / stat cards / movers
 - `style.py` — scoped CSS + HTML chrome and pivot tables
 - `charts.py` — Altair Trends charts
+- `interactive.py` — clickable tables via `st.components.v2`
+- `snowflake.yml` — Snowflake CLI deploy definition (container runtime)
+- `pyproject.toml` — dependencies for the container runtime and the local venv
 - `.streamlit/config.toml` — navy/gold theme

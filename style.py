@@ -6,14 +6,20 @@ column-group color bands, gold TOTAL column, and per-row percentage bars;
 they are mounted through the interactive.table component (shadow DOM), so
 their CSS ships separately as TABLE_CSS while the page chrome uses CSS.
 Drill-down is driven by row clicks + synced Streamlit selectors.
+
+The pivot/subject tables are built from a shared column-spec builder so the
+column-set control (STANDARD / +AGE / STATUS + AGE) and the sparkline TREND
+column compose without duplicated markup. "TYPES" is the legacy 11-column
+layout kept for the nested program breakdown table.
 """
 from __future__ import annotations
 
 from html import escape
 
+import pandas as pd
 import streamlit as st
 
-from transforms import ROLLUP_COLS, fmt, fmtq
+from transforms import EXT_COLS, ROLLUP_COLS, STATUS_LABELS, fmt, fmtq
 
 # Shared base (fonts + palette vars): needed in the page stylesheet for the
 # chrome AND inside each table component, because page styles can't pierce
@@ -74,10 +80,11 @@ _CHROME_CSS = """
   color:var(--muted); margin:8px 0 12px; display:flex; align-items:center; gap:10px; }
 .fct .sec-title::after { content:''; flex:1; height:1px; background:var(--border); }
 
-/* Hide the vega-embed actions menu (⋯ Save as SVG/PNG, View Source, …). SiS/Streamlit
-   1.51 force-shows it with vega-embed's own CSS disabled (defaultStyle:false), so it
-   renders unstyled/oversized. Not needed on this dashboard. Global (not .fct-scoped)
-   since the toolbar lives outside the .fct chrome. */
+/* Hide the vega-embed actions menu (⋯ Save as SVG/PNG, View Source, …). Not wanted
+   on this dashboard, and Streamlit builds that force-show it do so with vega-embed's
+   own CSS disabled (defaultStyle:false), rendering it unstyled/oversized — so hide it
+   defensively. Global (not .fct-scoped) since the toolbar lives outside the .fct
+   chrome. */
 .vega-embed details,
 .vega-embed summary,
 .vega-embed .vega-actions {
@@ -119,6 +126,27 @@ TABLE_CSS = _BASE_CSS + """
 .fct .tfoot-row td { font-weight:700; font-size:12px; }
 .fct .sub-label { color:var(--muted); font-size:10px; font-weight:400; }
 
+/* STATUS / AGE / TREND column bands */
+.fct .cg th.th-status, .fct thead th.th-status { background:#3d4f6b; }
+.fct .cg th.th-age, .fct thead th.th-age { background:#57534e; }
+.fct .cg th.th-trend, .fct thead th.th-trend { background:#334155; }
+.fct .td-slated { color:var(--nonwhole); }
+.fct .td-unslated { color:var(--whole); }
+.fct .td-age { color:var(--muted); }
+.fct .td-trend { white-space:nowrap; }
+.fct .td-trend svg.spark { vertical-align:middle; margin-right:6px; }
+.fct .chip { display:inline-block; font-size:10px; font-weight:700; padding:1px 6px;
+  border-radius:4px; vertical-align:middle; }
+.fct .chip-up { background:#dcfce7; color:#166534; }
+.fct .chip-down { background:#fee2e2; color:#7f1d1d; }
+.fct .chip-new { background:#e0e7ff; color:#3730a3; }
+
+/* item-panel status text */
+.fct .st { font-size:11px; font-weight:700; }
+.fct .st-U { color:var(--whole); }
+.fct .st-S { color:var(--nonwhole); }
+.fct .st-O { color:var(--cutsig); }
+
 /* PERCENTAGE BAR */
 .fct .bar { display:flex; gap:2px; height:4px; border-radius:3px; overflow:hidden;
   width:110px; margin-top:5px; }
@@ -130,9 +158,26 @@ TABLE_CSS = _BASE_CSS + """
 .fct tbody tr.selected td:first-child { padding-left:13px; }
 /* keep the sticky app header + panel heading/search visible on scrollIntoView */
 .fct .table-wrap { scroll-margin-top:160px; }
+
+/* ROWS-PER-VIEW CAP: .scrollable is toggled by interactive.py's JS when a
+   max_height is passed. Bound the height, scroll the overflow, and pin the
+   header + TOTAL footer so they stay visible while scrolling. The whole thead
+   / tfoot stick as a block (handles the two-row pivot/subject group header and
+   the single-row item header uniformly — no per-row top offset to tune). */
+.fct .table-wrap.scrollable { overflow-y:auto; }
+.fct .table-wrap.scrollable thead { position:sticky; top:0; z-index:2; }
+.fct .table-wrap.scrollable tfoot { position:sticky; bottom:0; z-index:2; }
 """
 
-CSS = "<style>" + _BASE_CSS + _CHROME_CSS + "</style>"
+# Sidebar sizing for the "Ask the data" assistant (left side — Streamlit default).
+# The width is applied ONLY while the sidebar is expanded so collapsing it lets
+# the dashboard reclaim the space; a blanket min-width leaves an empty gap on
+# collapse. Global (not .fct-scoped).
+_SIDEBAR_CSS = """
+[data-testid="stSidebar"][aria-expanded="true"] { min-width: 360px; max-width: 420px; }
+"""
+
+CSS = "<style>" + _BASE_CSS + _CHROME_CSS + _SIDEBAR_CSS + "</style>"
 
 
 def inject_css():
@@ -214,20 +259,170 @@ def stat_cards_html(c: dict) -> str:
     )
 
 
-_GROUP_HEADER = (
-    '<tr class="cg"><th></th>'
-    '<th colspan="3" class="th-whole">◆ WHOLE</th>'
-    '<th colspan="3" class="th-nonwhole">◆ NON-WHOLE</th>'
-    '<th colspan="3" class="th-cutsig">◆ CUT SIG</th>'
-    '<th class="th-total"></th></tr>'
-)
-_COL_HEADER = (
-    "<tr><th>{label}</th>"
-    '<th class="th-whole">QTY</th><th class="th-whole">SUBJ</th><th class="th-whole">VALUE</th>'
-    '<th class="th-nonwhole">QTY</th><th class="th-nonwhole">SUBJ</th><th class="th-nonwhole">VALUE</th>'
-    '<th class="th-cutsig">QTY</th><th class="th-cutsig">SUBJ</th><th class="th-cutsig">VALUE</th>'
-    '<th class="th-total">TOTAL VALUE</th></tr>'
-)
+def aging_cards_html(a: dict) -> str:
+    """Headline aging cards for the AGING tab (reuses the .stat-card chrome)."""
+    avg = "—" if a.get("avg_age") is None else f'{a["avg_age"]:.1f} mo'
+    pct = "—" if a.get("pct_unslated_12") is None else f'{a["pct_unslated_12"]:.0f}%'
+    share = (a["total_12"] / a["total_val"] * 100.0) if a.get("total_val") else 0.0
+    return (
+        '<div class="stat-cards">'
+        '<div class="stat-card total"><div class="lbl">VALUE 12+ MO / PRE-WINDOW</div>'
+        f'<div class="val" style="color:var(--gold)">{fmt(a["total_12"])}</div>'
+        f'<div class="sub">{share:.0f}% of filtered value</div></div>'
+        '<div class="stat-card"><div class="lbl">VALUE-WEIGHTED AVG AGE</div>'
+        f'<div class="val" style="color:var(--accent)">{avg}</div>'
+        '<div class="sub">over items with a known age basis</div></div>'
+        '<div class="stat-card cutsig"><div class="lbl">UNSLATED VALUE 12+ MO</div>'
+        f'<div class="val" style="color:var(--cutsig)">{pct}</div>'
+        '<div class="sub">share of unslated value</div></div>'
+        '<div class="stat-card nonwhole"><div class="lbl">ITEMS 12+ MO</div>'
+        f'<div class="val" style="color:var(--nonwhole)">{fmtq(a["items_12"])}</div>'
+        '<div class="sub">distinct item numbers</div></div>'
+        "</div>"
+    )
+
+
+# ── sparklines ────────────────────────────────────────────────────────────────
+def _sparkline_svg(vals: list, w: int = 96, h: int = 22) -> str:
+    """Inline-SVG mini trend line (green when last ≥ first-nonzero, else red).
+
+    Trusted builder output — mounted through interactive.table's innerHTML;
+    clicks bubble to the row's tr[data-key] listener, so drilling keeps working.
+    """
+    if not vals:
+        return ""
+    lo, hi = min(vals), max(vals)
+    pad = 2.0
+    n = len(vals)
+    xs = [pad + (w - 2 * pad) * (i / (n - 1) if n > 1 else 0.5) for i in range(n)]
+    if hi <= lo:  # flat series -> midline
+        ys = [h / 2.0] * n
+    else:
+        ys = [pad + (h - 2 * pad) * (1 - (v - lo) / (hi - lo)) for v in vals]
+    pts = " ".join(f"{x:.1f},{y:.1f}" for x, y in zip(xs, ys))
+    first_nz = next((v for v in vals if v > 0), None)
+    up = first_nz is not None and vals[-1] >= first_nz
+    color = "var(--nonwhole)" if up else "var(--cutsig)"
+    return (
+        f'<svg class="spark" viewBox="0 0 {w} {h}" width="{w}" height="{h}">'
+        f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="1.5"/>'
+        f'<circle cx="{xs[-1]:.1f}" cy="{ys[-1]:.1f}" r="2" fill="{color}"/></svg>'
+    )
+
+
+def _trend_cell(entry) -> str:
+    """TREND cell: sparkline + % chip. entry is (vals, pct) from tx.sparks_for;
+    None (all-zero series / missing key) renders empty."""
+    if not entry:
+        return ""
+    vals, pct = entry
+    if pct is None:
+        chip = '<span class="chip chip-new">NEW</span>'
+    else:
+        cls = "chip-up" if pct >= 0 else "chip-down"
+        chip = f'<span class="chip {cls}">{pct:+.0f}%</span>'
+    return _sparkline_svg(vals) + chip
+
+
+# ── column-spec table machinery ───────────────────────────────────────────────
+# A column group is (group_label, header_css, [(col_header, cell_fn, td_css)]).
+# cell_fn(d) formats a cell from either a row Series or the footer totals dict,
+# so footer ratios (avg age, %12+) derive from the summed additive columns.
+_SUMMABLE = set(ROLLUP_COLS + EXT_COLS)
+
+
+def _fmt_avg_age(d) -> str:
+    av = float(d["av"] or 0)
+    return f'{float(d["agev"]) / av:.1f} mo' if av > 0 else "—"
+
+
+def _fmt_pct12(d) -> str:
+    tv = float(d["tv"] or 0)
+    return f'{float(d["v12"]) / tv * 100:.0f}%' if tv > 0 else "—"
+
+
+def _type_groups(three_stats: bool):
+    def cols(p, cls):
+        out = [("QTY", lambda d, k=f"{p}q": fmtq(d[k]), cls)]
+        if three_stats:
+            out.append(("SUBJ", lambda d, k=f"{p}s": fmtq(d[k]), cls))
+        out.append(("VALUE", lambda d, k=f"{p}v": fmt(d[k]), cls))
+        return out
+
+    return [
+        ("◆ WHOLE", "th-whole", cols("w", "td-whole")),
+        ("◆ NON-WHOLE", "th-nonwhole", cols("nw", "td-nonwhole")),
+        ("◆ CUT SIG", "th-cutsig", cols("cs", "td-cutsig")),
+    ]
+
+
+_TOTAL_GROUP = ("", "th-total", [("TOTAL VALUE", lambda d: fmt(d["tv"]), "td-total")])
+_STATUS_GROUP = ("◆ STATUS", "th-status", [
+    ("SLATED", lambda d: fmt(d["slv"]), "td-slated"),
+    ("UNSLATED", lambda d: fmt(d["uslv"]), "td-unslated"),
+])
+_AGE_GROUP = ("◆ AGE", "th-age", [
+    ("AVG AGE", _fmt_avg_age, "td-age"),
+    ("%12+ VAL", _fmt_pct12, "td-age"),
+])
+
+
+def _col_groups(col_set: str, three_stats: bool):
+    """Column groups for a col_set. "TYPES" is the legacy 11-column layout
+    (kept for the nested program table); STANDARD adds SLATED/UNSLATED;
+    +AGE adds the age ratios; STATUS + AGE drops the type groups entirely."""
+    if col_set == "STATUS + AGE":
+        return [_TOTAL_GROUP, _STATUS_GROUP, _AGE_GROUP]
+    groups = _type_groups(three_stats) + [_TOTAL_GROUP]
+    if col_set in ("STANDARD", "+AGE"):
+        groups = groups + [_STATUS_GROUP]
+    if col_set == "+AGE":
+        groups = groups + [_AGE_GROUP]
+    return groups
+
+
+def _table_html(groups, first_header, frame, name_cell, row_attrs, spark_key,
+                sparks, foot_label, empty_msg) -> str:
+    """Shared builder for the pivot + subject drill tables."""
+    has_trend = sparks is not None
+    ghead = ['<tr class="cg"><th></th>']
+    chead = [f"<tr><th>{escape(first_header)}</th>"]
+    for glabel, gcss, cols in groups:
+        ghead.append(f'<th colspan="{len(cols)}" class="{gcss}">{glabel}</th>')
+        for h, _fn, _cls in cols:
+            chead.append(f'<th class="{gcss}">{h}</th>')
+    if has_trend:
+        ghead.append('<th class="th-trend"></th>')
+        chead.append('<th class="th-trend">TREND · Δ</th>')
+    ghead.append("</tr>")
+    chead.append("</tr>")
+
+    ncols = 1 + sum(len(g[2]) for g in groups) + (1 if has_trend else 0)
+    body = []
+    for _, r in frame.iterrows():
+        cells = [f"<td>{name_cell(r)}</td>"]
+        for _g, _css, cols in groups:
+            for _h, fn, cls in cols:
+                cells.append(f'<td class="{cls}">{fn(r)}</td>')
+        if has_trend:
+            cells.append(f'<td class="td-trend">{_trend_cell(sparks.get(spark_key(r)))}</td>')
+        body.append(f"<tr{row_attrs(r)}>" + "".join(cells) + "</tr>")
+    if not body:
+        body = [f'<tr><td colspan="{ncols}" style="text-align:center;color:var(--muted);'
+                f'padding:30px">{empty_msg}</td></tr>']
+
+    totals = {c: frame[c].sum() for c in frame.columns if c in _SUMMABLE}
+    fcells = [f"<td>{escape(foot_label)}</td>"]
+    for _g, _css, cols in groups:
+        for _h, fn, cls in cols:
+            fcells.append(f'<td class="{cls}">{fn(totals)}</td>')
+    if has_trend:
+        fcells.append("<td></td>")
+    foot = '<tr class="tfoot-row">' + "".join(fcells) + "</tr>"
+
+    return ('<div class="table-wrap"><table><thead>' + "".join(ghead) + "".join(chead)
+            + "</thead><tbody>" + "".join(body) + "</tbody><tfoot>" + foot
+            + "</tfoot></table></div>")
 
 
 def _row_attrs(key: str, clickable: bool, selected: str | None) -> str:
@@ -239,100 +434,73 @@ def _row_attrs(key: str, clickable: bool, selected: str | None) -> str:
 
 
 def pivot_table_html(roll, dim_col: str, dim_label: str,
-                     clickable: bool = False, selected: str | None = None) -> str:
+                     clickable: bool = False, selected: str | None = None,
+                     col_set: str = "TYPES", sparks: dict | None = None) -> str:
     """3-type rollup table with per-row percentage bars and a TOTAL footer."""
-    rows = []
-    for _, r in roll.iterrows():
+    groups = _col_groups(col_set, three_stats=True)
+
+    def name_cell(r):
+        return f'<div>{escape(str(r[dim_col]))}</div>{_bar(r["wv"], r["nwv"], r["csv"])}'
+
+    def row_attrs(r):
         val = str(r[dim_col])
         # the collapsed OTHER row has no drill target
-        attrs = _row_attrs(val, clickable and not val.startswith("OTHER ("), selected)
-        rows.append(
-            f"<tr{attrs}>"
-            f'<td><div>{escape(val)}</div>{_bar(r["wv"], r["nwv"], r["csv"])}</td>'
-            f'<td class="td-whole">{fmtq(r["wq"])}</td><td class="td-whole">{fmtq(r["ws"])}</td><td class="td-whole">{fmt(r["wv"])}</td>'
-            f'<td class="td-nonwhole">{fmtq(r["nwq"])}</td><td class="td-nonwhole">{fmtq(r["nws"])}</td><td class="td-nonwhole">{fmt(r["nwv"])}</td>'
-            f'<td class="td-cutsig">{fmtq(r["csq"])}</td><td class="td-cutsig">{fmtq(r["css"])}</td><td class="td-cutsig">{fmt(r["csv"])}</td>'
-            f'<td class="td-total">{fmt(r["tv"])}</td></tr>'
-        )
-    t = {c: roll[c].sum() for c in ROLLUP_COLS}
-    foot = (
-        '<tr class="tfoot-row"><td>TOTAL</td>'
-        f'<td class="td-whole">{fmtq(t["wq"])}</td><td class="td-whole">{fmtq(t["ws"])}</td><td class="td-whole">{fmt(t["wv"])}</td>'
-        f'<td class="td-nonwhole">{fmtq(t["nwq"])}</td><td class="td-nonwhole">{fmtq(t["nws"])}</td><td class="td-nonwhole">{fmt(t["nwv"])}</td>'
-        f'<td class="td-cutsig">{fmtq(t["csq"])}</td><td class="td-cutsig">{fmtq(t["css"])}</td><td class="td-cutsig">{fmt(t["csv"])}</td>'
-        f'<td class="td-total">{fmt(t["tv"])}</td></tr>'
-    )
-    body = "".join(rows) or '<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:30px">No rows match your filter.</td></tr>'
-    return (
-        '<div class="table-wrap"><table><thead>'
-        + _GROUP_HEADER
-        + _COL_HEADER.format(label=escape(dim_label))
-        + "</thead><tbody>"
-        + body
-        + "</tbody><tfoot>"
-        + foot
-        + "</tfoot></table></div>"
-    )
+        return _row_attrs(val, clickable and not val.startswith("OTHER ("), selected)
+
+    def spark_key(r):
+        return str(r[dim_col])
+
+    return _table_html(groups, dim_label, roll, name_cell, row_attrs, spark_key,
+                       sparks, "TOTAL", "No rows match your filter.")
 
 
 def subject_table_html(subs, show_brand_sublabel: bool = False,
-                       clickable: bool = False, selected: str | None = None) -> str:
+                       clickable: bool = False, selected: str | None = None,
+                       col_set: str = "TYPES", sparks: dict | None = None) -> str:
     """Subject-level drill table (QTY/VALUE per type, no subject counts)."""
-    group = (
-        '<tr class="cg"><th></th>'
-        '<th colspan="2" class="th-whole">◆ WHOLE</th>'
-        '<th colspan="2" class="th-nonwhole">◆ NON-WHOLE</th>'
-        '<th colspan="2" class="th-cutsig">◆ CUT SIG</th>'
-        '<th class="th-total"></th></tr>'
-    )
-    cols = (
-        "<tr><th>SUBJECT</th>"
-        '<th class="th-whole">QTY</th><th class="th-whole">VALUE</th>'
-        '<th class="th-nonwhole">QTY</th><th class="th-nonwhole">VALUE</th>'
-        '<th class="th-cutsig">QTY</th><th class="th-cutsig">VALUE</th>'
-        '<th class="th-total">TOTAL VALUE</th></tr>'
-    )
-    rows = []
-    for _, r in subs.iterrows():
-        # data-key mirrors the drill_subj option string ("BRAND — SUBJECT")
-        attrs = _row_attrs(f'{r["brand"]} — {r["subject_name"]}', clickable, selected)
+    groups = _col_groups(col_set, three_stats=False)
+
+    def name_cell(r):
         name = escape(str(r["subject_name"]))
         if show_brand_sublabel:
             name = f'<div>{name}</div><div class="sub-label">{escape(str(r["brand"]))}</div>'
-        rows.append(
-            f"<tr{attrs}>"
-            f"<td>{name}</td>"
-            f'<td class="td-whole">{fmtq(r["wq"])}</td><td class="td-whole">{fmt(r["wv"])}</td>'
-            f'<td class="td-nonwhole">{fmtq(r["nwq"])}</td><td class="td-nonwhole">{fmt(r["nwv"])}</td>'
-            f'<td class="td-cutsig">{fmtq(r["csq"])}</td><td class="td-cutsig">{fmt(r["csv"])}</td>'
-            f'<td class="td-total">{fmt(r["tv"])}</td></tr>'
-        )
-    t = {c: subs[c].sum() for c in ROLLUP_COLS}
-    foot = (
-        '<tr class="tfoot-row"><td>TOTAL (filtered)</td>'
-        f'<td class="td-whole">{fmtq(t["wq"])}</td><td class="td-whole">{fmt(t["wv"])}</td>'
-        f'<td class="td-nonwhole">{fmtq(t["nwq"])}</td><td class="td-nonwhole">{fmt(t["nwv"])}</td>'
-        f'<td class="td-cutsig">{fmtq(t["csq"])}</td><td class="td-cutsig">{fmt(t["csv"])}</td>'
-        f'<td class="td-total">{fmt(t["tv"])}</td></tr>'
-    )
-    body = "".join(rows) or '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:30px">No subjects found.</td></tr>'
-    return ('<div class="table-wrap"><table><thead>' + group + cols
-            + "</thead><tbody>" + body + "</tbody><tfoot>" + foot + "</tfoot></table></div>")
+        return name
+
+    def row_attrs(r):
+        # data-key mirrors the drill_subj option string ("BRAND — SUBJECT")
+        return _row_attrs(f'{r["brand"]} — {r["subject_name"]}', clickable, selected)
+
+    def spark_key(r):
+        return str(r["subj_key"])
+
+    return _table_html(groups, "SUBJECT", subs, name_cell, row_attrs, spark_key,
+                       sparks, "TOTAL (filtered)", "No subjects found.")
 
 
 def item_table_html(items) -> str:
-    head = (
-        "<tr><th>ITEM #</th><th>TEAM</th><th>FORM TYPE</th><th>USED STATUS</th>"
-        '<th>QTY</th><th>UNIT COST</th><th class="th-total">VALUATION</th></tr>'
-    )
+    """Item × status grain detail table (one row per item and status)."""
+    headers = ["ITEM #", "TEAM", "FORM TYPE", "USED STATUS", "STATUS", "PROGRAM",
+               "AGE", "QTY", "UNIT COST", "VALUATION"]
+    ncols = len(headers)
+    head = "<tr>" + "".join(
+        f'<th class="th-total">{h}</th>' if h == "VALUATION" else f"<th>{h}</th>"
+        for h in headers
+    ) + "</tr>"
     rows = []
     for _, r in items.iterrows():
+        age = r["age_months"]
+        age_txt = "—" if pd.isna(age) else f"{int(age)} mo"
+        scode = str(r["status"])
+        slabel = STATUS_LABELS.get(scode, scode)
         rows.append(
             "<tr>"
             f'<td>{escape(str(r["item_number"]))}</td>'
             f'<td style="text-align:left">{escape(str(r["team"]) or "—")}</td>'
             f'<td style="text-align:left">{escape(str(r["relic_form_type"]) or "—")}</td>'
             f'<td style="text-align:left">{escape(str(r["item_used_status"]) or "—")}</td>'
+            f'<td style="text-align:left"><span class="st st-{escape(scode)}">{slabel}</span></td>'
+            f'<td style="text-align:left">{escape(str(r["program"]))}</td>'
+            f"<td>{age_txt}</td>"
             f'<td>{fmtq(r["qty_onhand"])}</td>'
             f'<td>${r["unit_cost"]:,.2f}</td>'
             f'<td class="td-total">{fmt(r["valuation"])}</td></tr>'
@@ -340,9 +508,12 @@ def item_table_html(items) -> str:
     tq = items["qty_onhand"].sum()
     tv = items["valuation"].sum()
     foot = (
-        '<tr class="tfoot-row"><td colspan="4">TOTAL (filtered)</td>'
+        f'<tr class="tfoot-row"><td colspan="{ncols - 3}">TOTAL (filtered)</td>'
         f'<td>{fmtq(tq)}</td><td></td><td class="td-total">{fmt(tv)}</td></tr>'
     )
-    body = "".join(rows) or '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:30px">No items found.</td></tr>'
+    body = "".join(rows) or (
+        f'<tr><td colspan="{ncols}" style="text-align:center;color:var(--muted);'
+        'padding:30px">No items found.</td></tr>'
+    )
     return ('<div class="table-wrap"><table><thead>' + head
             + "</thead><tbody>" + body + "</tbody><tfoot>" + foot + "</tfoot></table></div>")

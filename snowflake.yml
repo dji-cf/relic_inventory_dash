@@ -1,13 +1,23 @@
 # Snowflake CLI project definition — deploys the dashboard to
-# Streamlit-in-Snowflake (warehouse runtime: no compute pool, no Docker).
+# Streamlit-in-Snowflake on the SPCS CONTAINER runtime (Streamlit >= 1.57).
 #
-#   snow --version >= 3          # older CLIs use definition_version 1
+# The container runtime installs deps from PyPI via uv, reading pyproject.toml.
+# This is what unlocks a newer Streamlit than the ~1.52 ceiling of the
+# warehouse runtime.
+#
+#   snow --version >= 3.14       # container runtime needs definition_version 2
 #   cd vault_inv_dash            # the folder with streamlit_app.py
 #   snow streamlit deploy --replace --open
 #
 # The command uploads the `artifacts` below to `stage`, (re)creates the STREAMLIT
 # object, and prints its URL. Database/schema come from your `snow` connection's
 # defaults unless you qualify `identifier` (see the mapping form below).
+#
+# PREREQUISITE (one-time, needs ACCOUNTADMIN): a PyPI external access
+# integration must exist and be granted to the deploying role, or the container
+# build fails to fetch packages. Its name must match
+# `external_access_integrations` below — check with
+#   SHOW EXTERNAL ACCESS INTEGRATIONS;
 definition_version: 2
 entities:
   vault_inv_dash:
@@ -24,17 +34,24 @@ entities:
       schema: SANDBOX
     title: "FCT Relic — Inventory Dashboard"
     stage: streamlit_stage            # created automatically if it doesn't exist
-    query_warehouse: ANALYTICS_WAREHOUSE   # keep in sync with data.py::_WAREHOUSE
+    # Container runtime: app code runs on this compute pool node; QUERY_WAREHOUSE
+    # below is used only for the SQL the app issues.
+    runtime_name: SYSTEM$ST_CONTAINER_RUNTIME_PY3_11
+    compute_pool: SYSTEM_COMPUTE_POOL_CPU   # account default (DEFAULT_STREAMLIT_COMPUTE_POOL)
+    external_access_integrations:
+      - pypi_access_integration       # must exist + be granted to the deploy role
+    query_warehouse: ANALYTICS_WAREHOUSE   # executes the app's SQL; keep in sync with data.py::_WAREHOUSE
     main_file: streamlit_app.py
     artifacts:
       - streamlit_app.py
+      - agent.py
       - charts.py
       - data.py
       - interactive.py
       - queries.py
       - style.py
       - transforms.py
-      - environment.yml
+      - pyproject.toml                # container runtime reads this for deps (streamlit>=1.57)
       # SiS honors only a subset of config.toml (theme) and ignores [server].
       # Included so the theme applies where supported; remove if it causes issues.
       - .streamlit/config.toml

@@ -46,12 +46,35 @@ ORDER BY as_of
 # the status / program views need.
 #
 # The as-of date is embedded as a DATE literal (not a qmark bind) so the SQL TEXT
-# is unique per date. st.connection(...).query() caches results, and in the
-# Streamlit version SiS runs (<=1.51) that cache key IGNORES `params` — a static
-# SQL string + qmark binds returns the first-loaded snapshot for every date, so
-# the numbers never change once deployed. A unique SQL string per date sidesteps
-# that entirely and is version-independent. `as_of` comes from MONTHS_SQL, but we
-# still assert the YYYY-MM-DD shape before interpolating.
+# is unique per date. st.connection(...).query() caches results, and on Streamlit
+# <=1.51 (the old SiS warehouse runtime) that cache key IGNORED `params` — a
+# static SQL string + qmark binds returned the first-loaded snapshot for every
+# date, so the numbers never changed once deployed. A unique SQL string per date
+# sidesteps that entirely and is version-independent, so it stays even though SiS
+# now runs 1.58. `as_of` comes from MONTHS_SQL, but we still assert the
+# YYYY-MM-DD shape before interpolating.
+def item_age_cte(d: str) -> str:
+    """CTE giving one row per ITEM_NUMBER with AGE_DATE = the item's age-basis date.
+
+    SINGLE POINT OF CHANGE for item aging. Today the age basis is the earliest
+    procurement TXN_DATE (month-granular; the data window opens ~2025-05 so ages
+    are censored / lower bounds). When the true receipt-date field is identified,
+    replace ONLY this function body -- the output contract (ITEM_NUMBER, AGE_DATE)
+    must stay the same so every downstream consumer keeps working.
+
+    ``d`` is a SQL DATE expression (e.g. ``TO_DATE('2026-05-01')``). TXN_DATE is a
+    native DATE column (verified via DESCRIBE), so no TRY_TO_DATE cast is needed;
+    WHERE TXN_DATE <= d guarantees AGE_DATE <= as-of and thus age_months >= 0.
+    """
+    return f"""
+    item_age AS (
+        SELECT ITEM_NUMBER, MIN(TXN_DATE) AS age_date
+        FROM {REC_VIEW}
+        WHERE TXN_DATE <= {d}
+        GROUP BY ITEM_NUMBER
+    )"""
+
+
 def onhand_sql(as_of: str) -> str:
     """Build the on-hand snapshot SQL for ``as_of`` (YYYY-MM-DD)."""
     if not _AS_OF_RE.match(as_of):
@@ -91,17 +114,127 @@ val AS (
     SELECT ITEM_NUMBER, ITEM_INV_VALU
     FROM {VAL_VIEW}
     WHERE TO_DATE('01-' || PERIOD_NAME, 'DD-MON-YY') = {d}
-)
+),{item_age_cte(d)}
 SELECT
-    COALESCE(NULLIF(TRIM(b.ITEM_NUMBER), ''), '(BLANK)')             AS item_number,
-    COALESCE(NULLIF(TRIM(b.SUBJECT_NAME), ''), '(BLANK)')           AS subject_name,
-    COALESCE(NULLIF(TRIM(b.BRAND), ''), '(BLANK)')                  AS brand,
+    COALESCE(NULLIF(TRIM(b.ITEM_NUMBER), ''), 'OTHER')             AS item_number,
+    COALESCE(NULLIF(TRIM(b.SUBJECT_NAME), ''), 'OTHER')           AS subject_name,
+    COALESCE(NULLIF(TRIM(b.BRAND), ''), 'OTHER')                  AS brand,
     UPPER(COALESCE(NULLIF(TRIM(b.TEAM), ''), ''))                   AS team,
-    UPPER(COALESCE(NULLIF(TRIM(b.RELIC_FORM_TYPE), ''), '(BLANK)')) AS relic_form_type,
+    UPPER(COALESCE(NULLIF(TRIM(b.RELIC_FORM_TYPE), ''), 'OTHER')) AS relic_form_type,
     UPPER(COALESCE(NULLIF(TRIM(b.ITEM_USED_STATUS), ''), ''))       AS item_used_status,
     b.SUBINVENTORY_CODE,
     b.qty_onhand,
-    v.ITEM_INV_VALU * (b.qty_onhand / iq.item_qty)                  AS valuation,
+    COALESCE(v.ITEM_INV_VALU, 0) * (b.qty_onhand / iq.item_qty)     AS valuation,
+    CASE
+        WHEN UPPER(b.ITEM_NUMBER) LIKE 'MEM%'           THEN 'WHOLE'
+        WHEN UPPER(b.RELIC_FORM_TYPE) = 'CUT SIGNATURE' THEN 'CUT SIG'
+        ELSE 'NON-WHOLE'
+    END AS itype,
+    CASE
+        WHEN b.SUBINVENTORY_CODE = 'REL_SLATE'  THEN 'S'
+        WHEN b.SUBINVENTORY_CODE = 'RELIC_OBSO' THEN 'O'
+        ELSE 'U'
+    END AS status,
+    CASE
+        WHEN b.SUBINVENTORY_CODE = 'REL_SLATE' THEN
+            CASE
+                WHEN SPLIT_PART(UPPER(b.LOCATOR_NAME), '.', 3) IN ('', '000')
+                    THEN 'NO PROGRAM'
+                ELSE SPLIT_PART(UPPER(b.LOCATOR_NAME), '.', 3)
+            END
+        ELSE NULL
+    END AS program,
+    a.age_date                                                     AS age_date,
+    DATEDIFF('month', a.age_date, {d})                             AS age_months
+FROM bins b
+JOIN item_qty iq      ON iq.ITEM_NUMBER = b.ITEM_NUMBER
+LEFT JOIN val v       ON v.ITEM_NUMBER = b.ITEM_NUMBER
+LEFT JOIN item_age a  ON a.ITEM_NUMBER = b.ITEM_NUMBER
+"""
+
+
+# Multi-month history: ONE static, parameterless query returning the cumulative
+# on-hand balance for EVERY valuation period at once, at month x item x
+# subinventory x locator grain (program derived, matching onhand_sql). Feeds the
+# TRENDS tab and the INVENTORY sparklines; loaded lazily (never on first paint).
+#
+# Parameterless (like MONTHS_SQL) to sidestep the old <=1.51 query-cache-key bug
+# that ignored `params` (see the onhand_sql note above).
+#
+# Mirrors onhand_sql EXACTLY so the tabs agree:
+#   * TRY_TO_DECIMAL(QTY::string, 38, 4)  -- QTY is VARCHAR
+#   * ITEM_INV_VALU used RAW              -- it is NUMBER(18,5); NO TRY_TO_DECIMAL
+#   * TXN_DATE used RAW                   -- it is a native DATE; NO TRY_TO_DATE
+#   * TO_DATE('01-' || PERIOD_NAME, 'DD-MON-YY') for every period conversion
+#   * identical NULLIF/TRIM guards and itype / status / program CASE expressions
+#   * cumulative on-hand rule TXN_DATE <= month, LEFT JOIN valuation + COALESCE
+#
+# HAVING SUM(qty) > 0 is applied at (item x subinventory x locator) grain; program
+# is derived in the OUTER select only -- collapsing locator -> program before the
+# HAVING would net negative locator bins into sibling programs and break agreement
+# with load_onhand. monthly_net pre-aggregates txns per month before the range
+# join to kill fan-out (TXN_DATE is month-stamped, so this stays small).
+HISTORY_SQL = f"""
+WITH months AS (
+    SELECT DISTINCT TO_DATE('01-' || PERIOD_NAME, 'DD-MON-YY') AS month_start
+    FROM {VAL_VIEW}
+    WHERE PERIOD_NAME IS NOT NULL
+),
+txns AS (
+    SELECT ITEM_NUMBER, SUBJECT_NAME, BRAND, TEAM, RELIC_FORM_TYPE,
+           ITEM_USED_STATUS, SUBINVENTORY_CODE, LOCATOR_NAME,
+           TXN_DATE                                  AS txn_month,
+           TRY_TO_DECIMAL(QTY::string, 38, 4)        AS qty
+    FROM {REC_VIEW}
+    UNION ALL
+    SELECT ITEM_NUMBER, SUBJECT_NAME, BRAND, TEAM, RELIC_FORM_TYPE,
+           ITEM_USED_STATUS, SUBINVENTORY_CODE, LOCATOR_NAME,
+           TXN_DATE,
+           TRY_TO_DECIMAL(QTY::string, 38, 4)
+    FROM {CON_VIEW}
+),
+monthly_net AS (
+    -- pre-aggregate per txn-month BEFORE the spine join to kill fan-out
+    SELECT txn_month, ITEM_NUMBER, SUBJECT_NAME, BRAND, TEAM, RELIC_FORM_TYPE,
+           ITEM_USED_STATUS, SUBINVENTORY_CODE, LOCATOR_NAME,
+           SUM(qty) AS qty
+    FROM txns
+    GROUP BY 1,2,3,4,5,6,7,8,9
+),
+bins_hist AS (
+    -- cumulative on-hand per month at item x subinventory x locator grain
+    SELECT m.month_start,
+           n.ITEM_NUMBER, n.SUBJECT_NAME, n.BRAND, n.TEAM, n.RELIC_FORM_TYPE,
+           n.ITEM_USED_STATUS, n.SUBINVENTORY_CODE, n.LOCATOR_NAME,
+           SUM(n.qty) AS qty_onhand
+    FROM months m
+    JOIN monthly_net n ON n.txn_month <= m.month_start
+    GROUP BY 1,2,3,4,5,6,7,8,9
+    HAVING SUM(n.qty) > 0
+),
+item_qty_hist AS (
+    -- allocation denominator per (month, item)
+    SELECT month_start, ITEM_NUMBER, SUM(qty_onhand) AS item_qty
+    FROM bins_hist
+    GROUP BY 1,2
+),
+val_hist AS (
+    -- authoritative per-item valuation, keyed by period first-of-month
+    SELECT TO_DATE('01-' || PERIOD_NAME, 'DD-MON-YY') AS month_start,
+           ITEM_NUMBER, ITEM_INV_VALU
+    FROM {VAL_VIEW}
+)
+SELECT
+    b.month_start                                                  AS month,
+    COALESCE(NULLIF(TRIM(b.ITEM_NUMBER), ''), 'OTHER')           AS item_number,
+    COALESCE(NULLIF(TRIM(b.SUBJECT_NAME), ''), 'OTHER')          AS subject_name,
+    COALESCE(NULLIF(TRIM(b.BRAND), ''), 'OTHER')                 AS brand,
+    UPPER(COALESCE(NULLIF(TRIM(b.TEAM), ''), ''))                  AS team,
+    UPPER(COALESCE(NULLIF(TRIM(b.RELIC_FORM_TYPE), ''), 'OTHER')) AS relic_form_type,
+    UPPER(COALESCE(NULLIF(TRIM(b.ITEM_USED_STATUS), ''), ''))      AS item_used_status,
+    b.SUBINVENTORY_CODE,
+    b.qty_onhand,
+    COALESCE(v.ITEM_INV_VALU, 0) * (b.qty_onhand / iq.item_qty)    AS valuation,
     CASE
         WHEN UPPER(b.ITEM_NUMBER) LIKE 'MEM%'           THEN 'WHOLE'
         WHEN UPPER(b.RELIC_FORM_TYPE) = 'CUT SIGNATURE' THEN 'CUT SIG'
@@ -121,7 +254,7 @@ SELECT
             END
         ELSE NULL
     END AS program
-FROM bins b
-JOIN item_qty iq ON iq.ITEM_NUMBER = b.ITEM_NUMBER
-JOIN val v       ON v.ITEM_NUMBER = b.ITEM_NUMBER
+FROM bins_hist b
+JOIN item_qty_hist iq ON iq.month_start = b.month_start AND iq.ITEM_NUMBER = b.ITEM_NUMBER
+LEFT JOIN val_hist v  ON v.month_start = b.month_start AND v.ITEM_NUMBER = b.ITEM_NUMBER
 """
