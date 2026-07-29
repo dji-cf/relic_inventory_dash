@@ -139,6 +139,22 @@ def _subject_counts(g, dim):
     return counts
 
 
+def subject_count_totals(df) -> dict:
+    """Distinct subjects per type over the whole frame — ``_subject_counts``
+    without the ``dim`` grouping. Used to override a pivot table's TOTAL footer,
+    where summing the per-row distinct counts would double-count any subject
+    that appears under more than one dim value."""
+    out = {}
+    for t, p in TYPES.items():
+        sub = df[df["itype"] == t]
+        if sub.empty:
+            out[f"{p}s"] = 0
+            continue
+        per = sub.groupby("subj_key", dropna=False, observed=False)["qty_onhand"].sum()
+        out[f"{p}s"] = int((per > 0).sum())
+    return out
+
+
 def rollup(df, dim) -> pd.DataFrame:
     """Group ``df`` by ``dim`` into the standard 3-type rollup table."""
     empty = pd.DataFrame(columns=[dim] + ROLLUP_COLS + EXT_COLS)

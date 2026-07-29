@@ -207,7 +207,10 @@ def render_inventory():
     dim = cfg["col"]
     src = flt[flt["program"].notna()] if program_view else flt
     roll = tx.rollup(src, dim)
+    folded_vals: list[str] = []
     if ss.view == "BY FORM TYPE":
+        folded_vals = roll.loc[roll["tv"] < tx.FT_OTHER_THRESHOLD,
+                               dim].astype(str).tolist()
         roll = tx.collapse_other(roll, dim)
     if ss.view == "BY AGE":
         # age_bucket is an ordered categorical: sort by bucket, keep empty
@@ -255,10 +258,19 @@ def render_inventory():
     if current != "—" and current not in options:
         options.append(current)  # search can hide the selected row; keep the selectbox valid
 
+    # the footer's SUBJ columns are distinct counts, so they can't be summed
+    # down the column: recount over the source rows behind the visible rows
+    vis = set(roll[dim].astype(str))
+    keep = {v for v in vis if not v.startswith("OTHER (")}
+    if vis - keep:  # the collapsed OTHER row is visible: include what it folds
+        keep |= set(folded_vals)
+    subj_totals = tx.subject_count_totals(src[src[dim].astype(str).isin(keep)])
+
     clicked = interactive.table(
         style.pivot_table_html(roll, dim, cfg["label"], clickable=True,
                                selected=None if current == "—" else current,
-                               col_set=ss.pivot_cols, sparks=sparks),
+                               col_set=ss.pivot_cols, sparks=sparks,
+                               totals_override=subj_totals),
         key="pivot_tbl", max_height=_cap_px(ss.pivot_rows),
     )
     if clicked is not None and (clicked == current or clicked in options):
@@ -283,8 +295,12 @@ def render_inventory():
         st.segmented_control("Subject drill", ["ITEMS", "BY PROGRAM"], key="drill_mode",
                              on_change=_sticky, args=("drill_mode",))
 
+    # union count + per-type counts (subjects with items in several types are in
+    # each type's count but once in the union, so the parts can exceed the total)
     st.markdown(f"#### {sel} &nbsp; <span style='color:#6b7fa3;font-size:14px'>"
-                f"{len(subs)} subjects</span>", unsafe_allow_html=True)
+                f"{len(subs)} subjects · {int(subs['ws'].sum())} whole / "
+                f"{int(subs['nws'].sum())} non-whole / "
+                f"{int(subs['css'].sum())} cut sig</span>", unsafe_allow_html=True)
     sc1, sc2 = st.columns([4, 1])
     sq = sc1.text_input("Filter subjects", key="subj_search",
                         placeholder="Filter subjects…", label_visibility="collapsed")
@@ -325,15 +341,20 @@ def render_inventory():
     if status_code == "S" and ss.drill_mode == "BY PROGRAM":
         # nested program table keeps the legacy TYPES layout (rows are slated-only,
         # so STATUS/AGE columns would be redundant there)
-        prog = tx.program_breakdown(flt, brand_v, subj_v)
+        prog = tx.program_breakdown(sub_src, brand_v, subj_v)
+        prog_src = sub_src[(sub_src["brand"] == brand_v)
+                           & (sub_src["subject_name"] == subj_v)
+                           & (sub_src["status"] == "S")]
         pc1, pc2 = st.columns([4, 1])
         pc1.markdown(f"#### {subj_v} — by program")
         _rows_select(pc2, "prog_rows")
-        interactive.table(style.pivot_table_html(prog, "program", "PROGRAM"),
+        interactive.table(style.pivot_table_html(
+                              prog, "program", "PROGRAM",
+                              totals_override=tx.subject_count_totals(prog_src)),
                           key="prog_tbl", scroll=scroll_items,
                           max_height=_cap_px(ss.prog_rows))
     else:
-        items = tx.items_for(flt, brand_v, subj_v)
+        items = tx.items_for(sub_src, brand_v, subj_v)
         i1, i2, i3 = st.columns([3, 0.8, 1])
         n_items = items["item_number"].nunique()
         i1.markdown(f"#### {subj_v} &nbsp; <span style='color:#6b7fa3;font-size:14px'>"

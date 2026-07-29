@@ -382,7 +382,8 @@ def _col_groups(col_set: str, three_stats: bool):
 
 
 def _table_html(groups, first_header, frame, name_cell, row_attrs, spark_key,
-                sparks, foot_label, empty_msg) -> str:
+                sparks, foot_label, empty_msg,
+                totals_override: dict | None = None) -> str:
     """Shared builder for the pivot + subject drill tables."""
     has_trend = sparks is not None
     ghead = ['<tr class="cg"><th></th>']
@@ -412,6 +413,9 @@ def _table_html(groups, first_header, frame, name_cell, row_attrs, spark_key,
                 f'padding:30px">{empty_msg}</td></tr>']
 
     totals = {c: frame[c].sum() for c in frame.columns if c in _SUMMABLE}
+    # distinct-count columns (ws/nws/css) aren't additive across rows — callers
+    # pass true distinct totals to replace the double-counting column sums
+    totals.update(totals_override or {})
     fcells = [f"<td>{escape(foot_label)}</td>"]
     for _g, _css, cols in groups:
         for _h, fn, cls in cols:
@@ -435,7 +439,8 @@ def _row_attrs(key: str, clickable: bool, selected: str | None) -> str:
 
 def pivot_table_html(roll, dim_col: str, dim_label: str,
                      clickable: bool = False, selected: str | None = None,
-                     col_set: str = "TYPES", sparks: dict | None = None) -> str:
+                     col_set: str = "TYPES", sparks: dict | None = None,
+                     totals_override: dict | None = None) -> str:
     """3-type rollup table with per-row percentage bars and a TOTAL footer."""
     groups = _col_groups(col_set, three_stats=True)
 
@@ -451,7 +456,8 @@ def pivot_table_html(roll, dim_col: str, dim_label: str,
         return str(r[dim_col])
 
     return _table_html(groups, dim_label, roll, name_cell, row_attrs, spark_key,
-                       sparks, "TOTAL", "No rows match your filter.")
+                       sparks, "TOTAL", "No rows match your filter.",
+                       totals_override=totals_override)
 
 
 def subject_table_html(subs, show_brand_sublabel: bool = False,
