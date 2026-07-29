@@ -135,7 +135,7 @@ def _on_view_change():
 
 
 # ── top controls ────────────────────────────────────────────────────────────
-c1, c2, c3 = st.columns([1.1, 2.6, 1.4])
+c1, c2, c3, c4 = st.columns([1.1, 2.6, 1.4, 0.4])
 with c1:
     st.selectbox("As-of date", months, format_func=month_label, key="as_of")
 with c2:
@@ -143,6 +143,10 @@ with c2:
 with c3:
     st.segmented_control("Tab", ["INVENTORY", "TRENDS", "AGING"], key="tab",
                          on_change=_sticky, args=("tab",))
+with c4:
+    if st.button("↻ Refresh", help="Clear cached data and reload from Snowflake"):
+        st.cache_data.clear()
+        st.rerun()
 
 # Program view is slated-only (mirrors the HTML); _on_view_change forces ss.status="SLATED".
 # The AGING tab always spans all statuses, so the control is disabled there too.
@@ -152,6 +156,7 @@ st.segmented_control("Status", list(STATUS_OPTS), key="status",
                      disabled=program_view or aging_tab,
                      on_change=_sticky, args=("status",))
 status_code = "A" if aging_tab else STATUS_OPTS[ss.status]
+
 
 # ── load snapshot ─────────────────────────────────────────────────────────────
 raw = data.load_onhand(ss.as_of)
@@ -343,13 +348,13 @@ def render_inventory():
                          status=items["status"].map(tx.STATUS_LABELS))
             [["item_number", "subject", "brand", "team", "relic_form_type",
               "item_used_status", "qty_onhand", "valuation", "status",
-              "program", "age_months"]]
+              "program", "age_days"]]
             .rename(columns={
                 "item_number": "Item #", "subject": "Subject", "brand": "Brand",
                 "team": "Team", "relic_form_type": "Form Type",
                 "item_used_status": "Used Status", "qty_onhand": "Qty On Hand",
                 "valuation": "Valuation (USD)", "status": "Status",
-                "program": "Program", "age_months": "Age (months)"})
+                "program": "Program", "age_days": "Age (days)"})
         )
         i3.download_button("⬇ Export XLS", to_excel(export_df),
                            file_name=f"relic_items_{brand_v}_{subj_v}.xlsx",
@@ -484,11 +489,11 @@ def render_aging():
 
     st.html(style.open_fct() + '<div class="sec-title">STALE INVENTORY REPORT</div>' + style.close_fct())
     r1, r2, r3 = st.columns([2, 1.6, 0.9])
-    thr = r1.slider("Stale threshold (months)", 3, 15, value=12, key="stale_months")
+    thr = r1.slider("Stale threshold (days)", 90, 730, value=365, key="stale_days")
     r2.segmented_control("Report status", ["UNSLATED", "SLATED", "OBSOLETE", "ALL"],
                          key="stale_status", on_change=_sticky, args=("stale_status",))
     _rows_select(r3, "stale_rows")
-    st.caption("Defaults (12 mo / unslated) are placeholders — the stale rule is "
+    st.caption("Defaults (365 days / unslated) are placeholders — the stale rule is "
                "TBD with the business and may differ by case.")
     sel = ss.stale_status
     statuses = {"U", "S", "O"} if sel == "ALL" else {_STATUS_CODES[sel]}
@@ -498,13 +503,13 @@ def render_aging():
                 "item_number": "Item #", "brand": "Brand", "subject_name": "Subject",
                 "team": "Team", "relic_form_type": "Form Type",
                 "item_used_status": "Used Status", "status": "Status",
-                "program": "Program", "age_months": "Age (mo)",
+                "program": "Program", "age_days": "Age (days)",
                 "qty_onhand": "Qty", "valuation": "Valuation (USD)"}))
     st.dataframe(
         disp, hide_index=True, width="stretch",
         height=_df_height(ss.stale_rows, len(disp)),
         column_config={
-            "Age (mo)": st.column_config.NumberColumn(format="%d"),
+            "Age (days)": st.column_config.NumberColumn(format="%d"),
             "Qty": st.column_config.NumberColumn(format="%.0f"),
             "Valuation (USD)": st.column_config.NumberColumn(format="$%.0f"),
         },

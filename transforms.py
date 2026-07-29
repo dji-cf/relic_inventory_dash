@@ -16,32 +16,36 @@ TYPES = {"WHOLE": "w", "NON-WHOLE": "nw", "CUT SIG": "cs"}
 ROLLUP_COLS = ["wq", "ws", "wv", "nwq", "nws", "nwv", "csq", "css", "csv", "tv"]
 # Additive extension columns (sums only — see module docstring):
 #   slv / uslv : slated / unslated value (obsolete counts in neither)
-#   agev / av  : Σ(valuation × age_months) and Σ(valuation) over KNOWN ages only,
+#   agev / av  : Σ(valuation × age_days) and Σ(valuation) over KNOWN ages only,
 #                so avg age = agev/av excludes NULL-age value from both sides
-#   v12        : valuation in the oldest age bucket (NULL age folds in here)
+#   v12        : valuation in the >1yr age buckets (NULL age folds in here)
 EXT_COLS = ["slv", "uslv", "agev", "av", "v12"]
 FT_OTHER_THRESHOLD = 25_000
+# Placeholder queries.onhand_sql substitutes for a blank ITEM_NUMBER / SUBJECT_NAME
+# / BRAND. It is not a real member, so headline distinct counts exclude it.
+OTHER = "OTHER"
 
 STATUS_LABELS = {"U": "UNSLATED", "S": "SLATED", "O": "OBSOLETE"}
 
 # ── item aging (shared data-layer + transforms contract) ──────────────────────
-# Left-closed month buckets. The oldest bucket is labelled "/ pre-window" because
-# the data window opens ~2025-05, so items on hand at the open have a censored
-# (lower-bound) age. See queries.item_age_cte for the swappable age basis.
-AGE_EDGES = [0, 3, 6, 9, 12, np.inf]
-AGE_LABELS = ["0-3", "3-6", "6-9", "9-12", "12+ / pre-window"]
+# Left-closed DAY buckets matching FCT_INVENTORY_AGING (RECEIPT_DATE-based).
+# The oldest bucket is labelled "/ pre-window" because the data window opens
+# ~2025-05, so items on hand at the open have a censored (lower-bound) age.
+# See queries.item_age_cte for the swappable age basis.
+AGE_EDGES = [0, 91, 181, 366, 731, np.inf]
+AGE_LABELS = ["0-90", "91-180", "181-365", "over 1yr", "over 2yr / pre-window"]
 
 
-def age_bucket(months: pd.Series) -> pd.Series:
-    """Bucket item age (in months) into ``AGE_LABELS`` (left-closed bins).
+def age_bucket(days: pd.Series) -> pd.Series:
+    """Bucket item age (in days) into ``AGE_LABELS`` (left-closed bins).
 
-    NULL age -- an on-hand item with no procurement row, currently none in the
-    data -- is folded into the oldest bucket so BY-AGE rollups still reconcile to
+    Edges match FCT_INVENTORY_AGING: 0-90, 91-180, 181-365, over 1yr, over 2yr.
+    NULL age is folded into the oldest bucket so BY-AGE rollups reconcile to
     the portfolio total (a missing date never drops value). Value-weighted
     avg-age math elsewhere separately excludes NULL-age valuation so the mean is
     not distorted by an unknown date.
     """
-    s = pd.to_numeric(months, errors="coerce")
+    s = pd.to_numeric(days, errors="coerce")
     cut = pd.cut(s, bins=AGE_EDGES, labels=AGE_LABELS, right=False)
     return cut.fillna(AGE_LABELS[-1])
 
@@ -51,6 +55,14 @@ def fmt(n) -> str:
     if n is None or pd.isna(n):
         return "—"
     return "$" + f"{round(float(n)):,}"
+
+
+def fmt2(n) -> str:
+    """Dollars WITH cents — headline stat cards only, so they tie to the
+    authoritative valuation snapshot exactly. Tables keep ``fmt``."""
+    if n is None or pd.isna(n):
+        return "—"
+    return "$" + f"{float(n):,.2f}"
 
 
 def fmtq(n) -> str:
@@ -84,14 +96,17 @@ def _typed_value_cols(df):
         g[f"{p}v"] = np.where(m, g["valuation"], 0.0)
     g["slv"] = np.where(g["status"] == "S", g["valuation"], 0.0)
     g["uslv"] = np.where(g["status"] == "U", g["valuation"], 0.0)
-    if "age_months" in g.columns:
-        # age_months is Int64-nullable: mask first, multiply on a float copy
-        age = pd.to_numeric(g["age_months"], errors="coerce").astype("float64")
+    if "age_days" in g.columns:
+        # age_days is Int64-nullable: mask first, multiply on a float copy
+        age = pd.to_numeric(g["age_days"], errors="coerce").astype("float64")
         known = age.notna().to_numpy()
         g["agev"] = np.where(known, g["valuation"] * age.fillna(0.0), 0.0)
         g["av"] = np.where(known, g["valuation"], 0.0)
-        g["v12"] = np.where(g["age_bucket"].astype(str) == AGE_LABELS[-1],
-                            g["valuation"], 0.0)
+        # v12 = valuation in the >1yr buckets (over 1yr + over 2yr)
+        bucket_str = g["age_bucket"].astype(str)
+        g["v12"] = np.where(
+            (bucket_str == AGE_LABELS[-1]) | (bucket_str == AGE_LABELS[-2]),
+            g["valuation"], 0.0)
     else:  # frames without aging (e.g. a history month) still roll up cleanly
         g["agev"] = 0.0
         g["av"] = 0.0
@@ -100,7 +115,17 @@ def _typed_value_cols(df):
 
 
 def _subject_counts(g, dim):
-    """Distinct subjects per type whose summed qty within the group is > 0."""
+    """Distinct subjects per type whose summed qty within the group is > 0.
+
+    Keyed on ``subj_key`` (brand + subject), so these are BRAND-SCOPED counts: a
+    subject stocked under two brands counts once per brand. That is the right
+    grain for a table row (it matches the subjects the row drills into) and is
+    identical to a plain subject count in the BY BRAND / SPORT view. It is NOT
+    the headline definition — ``stat_cards`` counts distinct ``subject_name`` so
+    the cards tie to the authoritative Sigma figures. Expect the sum of a
+    table's subject column to exceed the card's total by the number of
+    cross-brand subjects.
+    """
     counts = {}
     for t, p in TYPES.items():
         sub = g[g["itype"] == t]
@@ -142,7 +167,12 @@ def rollup(df, dim) -> pd.DataFrame:
 
 
 def collapse_other(roll, dim, threshold=FT_OTHER_THRESHOLD):
-    """Fold rows below ``threshold`` total value into a single OTHER row (Form Type view)."""
+    """Fold rows below ``threshold`` total value into a single OTHER row (Form Type view).
+
+    Value / qty / EXT_COLS are additive so the OTHER row is exact. The subject
+    columns (ws / nws / css) are distinct counts and are only summed here — a
+    subject present in two folded form types is counted twice in the OTHER row.
+    """
     if roll.empty:
         return roll
     main = roll[roll["tv"] >= threshold]
@@ -156,7 +186,12 @@ def collapse_other(roll, dim, threshold=FT_OTHER_THRESHOLD):
 
 
 def subject_rollup(sub) -> pd.DataFrame:
-    """One row per (brand, subject) with the 3-type split. Used in drill panels."""
+    """One row per (brand, subject) with the 3-type split. Used in drill panels.
+
+    Rows are keyed on ``subj_key`` because a subject can appear under multiple
+    brands and the drill panel must address exactly one of them. See
+    ``_subject_counts`` for why this differs from the ``stat_cards`` definition.
+    """
     cols = ["brand", "subject_name", "subj_key"] + ROLLUP_COLS + EXT_COLS
     if sub.empty:
         return pd.DataFrame(columns=cols)
@@ -194,7 +229,7 @@ def items_for(df, brand, subject) -> pd.DataFrame:
     """
     g = df[(df["brand"] == brand) & (df["subject_name"] == subject)]
     cols = ["item_number", "team", "relic_form_type", "item_used_status",
-            "status", "program", "age_months", "qty_onhand", "unit_cost", "valuation"]
+            "status", "program", "age_days", "qty_onhand", "unit_cost", "valuation"]
     if g.empty:
         return pd.DataFrame(columns=cols)
     out = (
@@ -204,7 +239,7 @@ def items_for(df, brand, subject) -> pd.DataFrame:
             relic_form_type=("relic_form_type", "first"),
             item_used_status=("item_used_status", "first"),
             program=("program", _join_programs),
-            age_months=("age_months", "first"),
+            age_days=("age_days", "first"),
             qty_onhand=("qty_onhand", "sum"),
             valuation=("valuation", "sum"),
         )
@@ -233,24 +268,38 @@ def program_breakdown(df, brand, subject) -> pd.DataFrame:
 
 # ── stat cards & totals ───────────────────────────────────────────────────────
 def stat_cards(df) -> dict:
+    """Headline card figures.
+
+    Counts are deliberately NOT keyed on ``subj_key``: a subject appearing under
+    two brands is ONE subject here, matching the authoritative Sigma cards.
+    ``OTHER`` is the blank-value placeholder from queries.onhand_sql (blank
+    BRAND / SUBJECT_NAME), not a real brand or subject, so it is excluded from
+    both counts — its valuation still counts in full.
+    """
     def vq(t):
         sub = df[df["itype"] == t]
         return float(sub["valuation"].sum()), float(sub["qty_onhand"].sum())
 
+    def items(t):
+        return int(df.loc[df["itype"] == t, "item_number"].nunique())
+
     def subj(t):
         sub = df[df["itype"] == t]
-        per = sub.groupby("subj_key")["qty_onhand"].sum()
-        return set(per[per > 0].index)
+        per = sub.groupby("subject_name", observed=True)["qty_onhand"].sum()
+        return set(per[per > 0].index) - {OTHER}
 
     wv, wq = vq("WHOLE")
     nwv, nwq = vq("NON-WHOLE")
     csv, csq = vq("CUT SIG")
     ws, nws, css = subj("WHOLE"), subj("NON-WHOLE"), subj("CUT SIG")
+    brands = df.loc[df["brand"] != OTHER, "brand"].nunique()
     return {
         "total_val": wv + nwv + csv,
         "whole_val": wv, "nonwhole_val": nwv, "cutsig_val": csv,
         "whole_qty": wq, "nonwhole_qty": nwq, "cutsig_qty": csq,
-        "brands": int(df["brand"].nunique()),
+        "whole_items": items("WHOLE"), "nonwhole_items": items("NON-WHOLE"),
+        "cutsig_items": items("CUT SIG"),
+        "brands": int(brands),
         "total_subj": len(ws | nws | css),
         "whole_subj": len(ws), "nonwhole_subj": len(nws), "cutsig_subj": len(css),
     }
@@ -381,9 +430,11 @@ def aging_stats(df) -> dict:
     if df.empty:
         return {"total_val": 0.0, "total_12": 0.0, "avg_age": None,
                 "pct_unslated_12": None, "items_12": 0}
-    in12 = df["age_bucket"].astype(str) == AGE_LABELS[-1]
+    # >1yr = over 1yr + over 2yr / pre-window
+    bucket_str = df["age_bucket"].astype(str)
+    in12 = (bucket_str == AGE_LABELS[-1]) | (bucket_str == AGE_LABELS[-2])
     total_12 = float(df.loc[in12, "valuation"].sum())
-    age = pd.to_numeric(df["age_months"], errors="coerce").astype("float64")
+    age = pd.to_numeric(df["age_days"], errors="coerce").astype("float64")
     known = age.notna()
     av = float(df.loc[known, "valuation"].sum())
     agev = float((df.loc[known, "valuation"] * age[known]).sum())
@@ -402,14 +453,14 @@ def stale_items(df, min_age, statuses) -> pd.DataFrame:
 
     NULL-age rows count as stale (they are by definition pre-window / unknown-
     origin — consistent with the oldest-bucket fold); none exist in current data.
-    ``statuses`` is a set of status codes ({"U"}, {"U","S","O"}, ...).
+    ``min_age`` is in DAYS. ``statuses`` is a set of status codes.
     """
-    age = pd.to_numeric(df["age_months"], errors="coerce")
+    age = pd.to_numeric(df["age_days"], errors="coerce")
     g = df[(age.isna() | (age >= min_age))]
     if statuses:
         g = g[g["status"].isin(statuses)]
     cols = ["item_number", "brand", "subject_name", "team", "relic_form_type",
-            "item_used_status", "status", "program", "age_months",
+            "item_used_status", "status", "program", "age_days",
             "qty_onhand", "valuation"]
     if g.empty:
         return pd.DataFrame(columns=cols)
@@ -422,7 +473,7 @@ def stale_items(df, min_age, statuses) -> pd.DataFrame:
             relic_form_type=("relic_form_type", "first"),
             item_used_status=("item_used_status", "first"),
             program=("program", _join_programs),
-            age_months=("age_months", "first"),
+            age_days=("age_days", "first"),
             qty_onhand=("qty_onhand", "sum"),
             valuation=("valuation", "sum"),
         )

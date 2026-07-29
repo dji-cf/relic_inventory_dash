@@ -21,6 +21,7 @@ import re
 REC_VIEW = "ORACLE_DATA_PROD.ATHLETE_SPEND.ATH_SPEND_REC_RELIC_RAW_V"
 CON_VIEW = "ORACLE_DATA_PROD.ATHLETE_SPEND.ATH_SPEND_CON_RELIC_RAW_V"
 VAL_VIEW = "ORACLE_DATA_PROD.ATHLETE_SPEND.ATH_SPEND_RELIC_ITEM_INV_VAL_V"
+AGING_VIEW = "ORACLE_DATA_PROD.ATHLETE_SPEND.FCT_INVENTORY_AGING"
 
 _AS_OF_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -56,21 +57,21 @@ ORDER BY as_of
 def item_age_cte(d: str) -> str:
     """CTE giving one row per ITEM_NUMBER with AGE_DATE = the item's age-basis date.
 
-    SINGLE POINT OF CHANGE for item aging. Today the age basis is the earliest
-    procurement TXN_DATE (month-granular; the data window opens ~2025-05 so ages
-    are censored / lower bounds). When the true receipt-date field is identified,
-    replace ONLY this function body -- the output contract (ITEM_NUMBER, AGE_DATE)
-    must stay the same so every downstream consumer keeps working.
+    SINGLE POINT OF CHANGE for item aging. The age basis is the earliest true
+    RECEIPT_DATE from FCT_INVENTORY_AGING (daily granularity; the data window
+    opens ~2025-05 so ages are still censored / lower bounds for items received
+    before that date). STREET_DATE is deliberately NOT used.
 
-    ``d`` is a SQL DATE expression (e.g. ``TO_DATE('2026-05-01')``). TXN_DATE is a
-    native DATE column (verified via DESCRIBE), so no TRY_TO_DATE cast is needed;
-    WHERE TXN_DATE <= d guarantees AGE_DATE <= as-of and thus age_months >= 0.
+    ``d`` is a SQL DATE expression (e.g. ``TO_DATE('2026-05-01')``).
+    RECEIPT_DATE is VARCHAR MM/DD/YYYY, parsed with TRY_TO_DATE;
+    WHERE ... <= d guarantees AGE_DATE <= as-of and thus age_days >= 0.
+    Output contract: (ITEM_NUMBER, age_date) — do not change.
     """
     return f"""
     item_age AS (
-        SELECT ITEM_NUMBER, MIN(TXN_DATE) AS age_date
-        FROM {REC_VIEW}
-        WHERE TXN_DATE <= {d}
+        SELECT ITEM_NUMBER, MIN(TRY_TO_DATE(RECEIPT_DATE, 'MM/DD/YYYY')) AS age_date
+        FROM {AGING_VIEW}
+        WHERE TRY_TO_DATE(RECEIPT_DATE, 'MM/DD/YYYY') <= {d}
         GROUP BY ITEM_NUMBER
     )"""
 
@@ -145,7 +146,7 @@ SELECT
         ELSE NULL
     END AS program,
     a.age_date                                                     AS age_date,
-    DATEDIFF('month', a.age_date, {d})                             AS age_months
+    DATEDIFF('day', a.age_date, {d})                               AS age_days
 FROM bins b
 JOIN item_qty iq      ON iq.ITEM_NUMBER = b.ITEM_NUMBER
 LEFT JOIN val v       ON v.ITEM_NUMBER = b.ITEM_NUMBER
