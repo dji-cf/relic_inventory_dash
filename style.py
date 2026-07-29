@@ -19,7 +19,7 @@ from html import escape
 import pandas as pd
 import streamlit as st
 
-from transforms import EXT_COLS, ROLLUP_COLS, STATUS_LABELS, fmt, fmtq
+from transforms import EXT_COLS, ROLLUP_COLS, STATUS_LABELS, fmt, fmt2, fmtq
 
 # Shared base (fonts + palette vars): needed in the page stylesheet for the
 # chrome AND inside each table component, because page styles can't pierce
@@ -213,7 +213,7 @@ def header_html(cards: dict, as_of_label: str) -> str:
         '<div class="hdr-meta">'
         f'<div>AS OF<b>{escape(as_of_label)}</b></div>'
         f'<div>BRANDS<b>{cards["brands"]}</b></div>'
-        f'<div>TOTAL VALUE<b>{fmt(cards["total_val"])}</b></div>'
+        f'<div>TOTAL VALUE<b>{fmt2(cards["total_val"])}</b></div>'
         "</div></div></div>"
     )
 
@@ -244,38 +244,38 @@ def stat_cards_html(c: dict) -> str:
     return (
         '<div class="stat-cards">'
         '<div class="stat-card total"><div class="lbl">TOTAL INVENTORY VALUE</div>'
-        f'<div class="val" style="color:var(--gold)">{fmt(c["total_val"])}</div>'
+        f'<div class="val" style="color:var(--gold)">{fmt2(c["total_val"])}</div>'
         f'<div class="sub">{c["brands"]} brands &nbsp;·&nbsp; {fmtq(c["total_subj"])} subjects</div></div>'
         '<div class="stat-card"><div class="lbl">◆ WHOLE VALUE</div>'
-        f'<div class="val" style="color:var(--whole)">{fmt(c["whole_val"])}</div>'
-        f'<div class="sub">{fmtq(c["whole_qty"])} items &nbsp;·&nbsp; {fmtq(c["whole_subj"])} subjects</div></div>'
+        f'<div class="val" style="color:var(--whole)">{fmt2(c["whole_val"])}</div>'
+        f'<div class="sub">{fmtq(c["whole_items"])} distinct items &nbsp;·&nbsp; {fmtq(c["whole_subj"])} subjects</div></div>'
         '<div class="stat-card nonwhole"><div class="lbl">◆ NON-WHOLE VALUE</div>'
-        f'<div class="val" style="color:var(--nonwhole)">{fmt(c["nonwhole_val"])}</div>'
-        f'<div class="sub">{fmtq(c["nonwhole_qty"])} items &nbsp;·&nbsp; {fmtq(c["nonwhole_subj"])} subjects</div></div>'
+        f'<div class="val" style="color:var(--nonwhole)">{fmt2(c["nonwhole_val"])}</div>'
+        f'<div class="sub">{fmtq(c["nonwhole_items"])} distinct items &nbsp;·&nbsp; {fmtq(c["nonwhole_subj"])} subjects</div></div>'
         '<div class="stat-card cutsig"><div class="lbl">◆ CUT SIG VALUE</div>'
-        f'<div class="val" style="color:var(--cutsig)">{fmt(c["cutsig_val"])}</div>'
-        f'<div class="sub">{fmtq(c["cutsig_qty"])} items &nbsp;·&nbsp; {fmtq(c["cutsig_subj"])} subjects</div></div>'
+        f'<div class="val" style="color:var(--cutsig)">{fmt2(c["cutsig_val"])}</div>'
+        f'<div class="sub">{fmtq(c["cutsig_items"])} distinct items &nbsp;·&nbsp; {fmtq(c["cutsig_subj"])} subjects</div></div>'
         "</div>"
     )
 
 
 def aging_cards_html(a: dict) -> str:
     """Headline aging cards for the AGING tab (reuses the .stat-card chrome)."""
-    avg = "—" if a.get("avg_age") is None else f'{a["avg_age"]:.1f} mo'
+    avg = "—" if a.get("avg_age") is None else f'{a["avg_age"]:.0f} days'
     pct = "—" if a.get("pct_unslated_12") is None else f'{a["pct_unslated_12"]:.0f}%'
     share = (a["total_12"] / a["total_val"] * 100.0) if a.get("total_val") else 0.0
     return (
         '<div class="stat-cards">'
-        '<div class="stat-card total"><div class="lbl">VALUE 12+ MO / PRE-WINDOW</div>'
+        '<div class="stat-card total"><div class="lbl">VALUE >1YR / PRE-WINDOW</div>'
         f'<div class="val" style="color:var(--gold)">{fmt(a["total_12"])}</div>'
         f'<div class="sub">{share:.0f}% of filtered value</div></div>'
         '<div class="stat-card"><div class="lbl">VALUE-WEIGHTED AVG AGE</div>'
         f'<div class="val" style="color:var(--accent)">{avg}</div>'
         '<div class="sub">over items with a known age basis</div></div>'
-        '<div class="stat-card cutsig"><div class="lbl">UNSLATED VALUE 12+ MO</div>'
+        '<div class="stat-card cutsig"><div class="lbl">UNSLATED VALUE >1YR</div>'
         f'<div class="val" style="color:var(--cutsig)">{pct}</div>'
         '<div class="sub">share of unslated value</div></div>'
-        '<div class="stat-card nonwhole"><div class="lbl">ITEMS 12+ MO</div>'
+        '<div class="stat-card nonwhole"><div class="lbl">ITEMS >1YR</div>'
         f'<div class="val" style="color:var(--nonwhole)">{fmtq(a["items_12"])}</div>'
         '<div class="sub">distinct item numbers</div></div>'
         "</div>"
@@ -327,13 +327,13 @@ def _trend_cell(entry) -> str:
 # ── column-spec table machinery ───────────────────────────────────────────────
 # A column group is (group_label, header_css, [(col_header, cell_fn, td_css)]).
 # cell_fn(d) formats a cell from either a row Series or the footer totals dict,
-# so footer ratios (avg age, %12+) derive from the summed additive columns.
+# so footer ratios (avg age, %>1yr) derive from the summed additive columns.
 _SUMMABLE = set(ROLLUP_COLS + EXT_COLS)
 
 
 def _fmt_avg_age(d) -> str:
     av = float(d["av"] or 0)
-    return f'{float(d["agev"]) / av:.1f} mo' if av > 0 else "—"
+    return f'{float(d["agev"]) / av:.0f} days' if av > 0 else "—"
 
 
 def _fmt_pct12(d) -> str:
@@ -363,7 +363,7 @@ _STATUS_GROUP = ("◆ STATUS", "th-status", [
 ])
 _AGE_GROUP = ("◆ AGE", "th-age", [
     ("AVG AGE", _fmt_avg_age, "td-age"),
-    ("%12+ VAL", _fmt_pct12, "td-age"),
+    ("%>1yr VAL", _fmt_pct12, "td-age"),
 ])
 
 
@@ -382,7 +382,8 @@ def _col_groups(col_set: str, three_stats: bool):
 
 
 def _table_html(groups, first_header, frame, name_cell, row_attrs, spark_key,
-                sparks, foot_label, empty_msg) -> str:
+                sparks, foot_label, empty_msg,
+                totals_override: dict | None = None) -> str:
     """Shared builder for the pivot + subject drill tables."""
     has_trend = sparks is not None
     ghead = ['<tr class="cg"><th></th>']
@@ -412,6 +413,9 @@ def _table_html(groups, first_header, frame, name_cell, row_attrs, spark_key,
                 f'padding:30px">{empty_msg}</td></tr>']
 
     totals = {c: frame[c].sum() for c in frame.columns if c in _SUMMABLE}
+    # distinct-count columns (ws/nws/css) aren't additive across rows — callers
+    # pass true distinct totals to replace the double-counting column sums
+    totals.update(totals_override or {})
     fcells = [f"<td>{escape(foot_label)}</td>"]
     for _g, _css, cols in groups:
         for _h, fn, cls in cols:
@@ -435,7 +439,8 @@ def _row_attrs(key: str, clickable: bool, selected: str | None) -> str:
 
 def pivot_table_html(roll, dim_col: str, dim_label: str,
                      clickable: bool = False, selected: str | None = None,
-                     col_set: str = "TYPES", sparks: dict | None = None) -> str:
+                     col_set: str = "TYPES", sparks: dict | None = None,
+                     totals_override: dict | None = None) -> str:
     """3-type rollup table with per-row percentage bars and a TOTAL footer."""
     groups = _col_groups(col_set, three_stats=True)
 
@@ -451,7 +456,8 @@ def pivot_table_html(roll, dim_col: str, dim_label: str,
         return str(r[dim_col])
 
     return _table_html(groups, dim_label, roll, name_cell, row_attrs, spark_key,
-                       sparks, "TOTAL", "No rows match your filter.")
+                       sparks, "TOTAL", "No rows match your filter.",
+                       totals_override=totals_override)
 
 
 def subject_table_html(subs, show_brand_sublabel: bool = False,
@@ -488,8 +494,8 @@ def item_table_html(items) -> str:
     ) + "</tr>"
     rows = []
     for _, r in items.iterrows():
-        age = r["age_months"]
-        age_txt = "—" if pd.isna(age) else f"{int(age)} mo"
+        age = r["age_days"]
+        age_txt = "—" if pd.isna(age) else f"{int(age)}d"
         scode = str(r["status"])
         slabel = STATUS_LABELS.get(scode, scode)
         rows.append(
