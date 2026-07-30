@@ -16,9 +16,10 @@ TYPES = {"WHOLE": "w", "NON-WHOLE": "nw", "CUT SIG": "cs"}
 ROLLUP_COLS = ["wq", "ws", "wv", "nwq", "nws", "nwv", "csq", "css", "csv", "tv"]
 # Additive extension columns (sums only — see module docstring):
 #   slv / uslv : slated / unslated value (obsolete counts in neither)
-#   agev / av  : Σ(valuation × age_days) and Σ(valuation) over KNOWN ages only,
-#                so avg age = agev/av excludes NULL-age value from both sides
-#   v12        : valuation in the >1yr age buckets (NULL age folds in here)
+#   agev / av  : Σ(valuation × age_days) and Σ(valuation); the known-age masking
+#                is a no-op now that every retained item has an age basis, but it
+#                keeps avg age = agev/av honest if a NULL ever slips through
+#   v12        : valuation in the >1yr age buckets (over 1yr + over 2yr)
 EXT_COLS = ["slv", "uslv", "agev", "av", "v12"]
 FT_OTHER_THRESHOLD = 25_000
 # Placeholder queries.onhand_sql substitutes for a blank ITEM_NUMBER / SUBJECT_NAME
@@ -29,21 +30,25 @@ STATUS_LABELS = {"U": "UNSLATED", "S": "SLATED", "O": "OBSOLETE"}
 
 # ── item aging (shared data-layer + transforms contract) ──────────────────────
 # Left-closed DAY buckets matching FCT_INVENTORY_AGING (RECEIPT_DATE-based).
-# The oldest bucket is labelled "/ pre-window" because the data window opens
-# ~2025-05, so items on hand at the open have a censored (lower-bound) age.
-# See queries.item_age_cte for the swappable age basis.
+# See queries.ITEM_AGE_CTE for the swappable age basis. Two window effects to
+# keep in mind when reading an age:
+#   * the aging window opens ~2025-05-30, so an item received earlier reports the
+#     window-open date — every age is a LOWER BOUND, and "over 2yr" therefore
+#     stays empty until 2027-05-30 rather than collecting pre-window inventory;
+#   * an item received later in the as-of month than its first-of-month TXN_DATE
+#     stamp clamps to age 0 and lands in "0-90" (see queries.onhand_sql).
 AGE_EDGES = [0, 91, 181, 366, 731, np.inf]
-AGE_LABELS = ["0-90", "91-180", "181-365", "over 1yr", "over 2yr / pre-window"]
+AGE_LABELS = ["0-90", "91-180", "181-365", "over 1yr", "over 2yr"]
 
 
 def age_bucket(days: pd.Series) -> pd.Series:
     """Bucket item age (in days) into ``AGE_LABELS`` (left-closed bins).
 
     Edges match FCT_INVENTORY_AGING: 0-90, 91-180, 181-365, over 1yr, over 2yr.
-    NULL age is folded into the oldest bucket so BY-AGE rollups reconcile to
-    the portfolio total (a missing date never drops value). Value-weighted
-    avg-age math elsewhere separately excludes NULL-age valuation so the mean is
-    not distorted by an unknown date.
+    ``age_days`` is non-NULL by construction (queries.ITEM_AGE_CTE is INNER
+    JOINed and the age is clamped at 0), so the ``fillna`` below is a pure
+    defense: were a NULL ever to appear it folds into the oldest bucket, keeping
+    BY-AGE rollups reconciled to the portfolio total rather than dropping value.
     """
     s = pd.to_numeric(days, errors="coerce")
     cut = pd.cut(s, bins=AGE_EDGES, labels=AGE_LABELS, right=False)
@@ -97,7 +102,9 @@ def _typed_value_cols(df):
     g["slv"] = np.where(g["status"] == "S", g["valuation"], 0.0)
     g["uslv"] = np.where(g["status"] == "U", g["valuation"], 0.0)
     if "age_days" in g.columns:
-        # age_days is Int64-nullable: mask first, multiply on a float copy
+        # age_days is Int64-nullable: mask first, multiply on a float copy. The
+        # mask is all-True in practice (see the age_bucket contract); it stays so
+        # a stray NULL can never poison the value-weighted average.
         age = pd.to_numeric(g["age_days"], errors="coerce").astype("float64")
         known = age.notna().to_numpy()
         g["agev"] = np.where(known, g["valuation"] * age.fillna(0.0), 0.0)
@@ -244,13 +251,15 @@ def items_for(df, brand, subject) -> pd.DataFrame:
     item's total value, then item, then status).
     """
     g = df[(df["brand"] == brand) & (df["subject_name"] == subject)]
-    cols = ["item_number", "team", "relic_form_type", "item_used_status",
-            "status", "program", "age_days", "qty_onhand", "unit_cost", "valuation"]
+    cols = ["item_number", "item_description", "team", "relic_form_type",
+            "item_used_status", "status", "program", "age_days", "qty_onhand",
+            "unit_cost", "valuation"]
     if g.empty:
         return pd.DataFrame(columns=cols)
     out = (
         g.groupby(["item_number", "status"], dropna=False, observed=False)
         .agg(
+            item_description=("item_description", "first"),
             team=("team", "first"),
             relic_form_type=("relic_form_type", "first"),
             item_used_status=("item_used_status", "first"),
@@ -439,14 +448,16 @@ def sparks_for(hist_flt, key_col, months) -> dict:
 
 # ── aging summary & stale report ──────────────────────────────────────────────
 def aging_stats(df) -> dict:
-    """Headline aging figures. avg_age excludes NULL-age value from numerator
-    AND denominator (per the age_bucket contract); total_12/items_12 include
-    NULL-age rows (they fold into the oldest bucket)."""
+    """Headline aging figures over the FCT_INVENTORY_AGING on-hand universe.
+
+    Every row has a real age basis now, so avg_age spans the full portfolio and
+    total_12 / items_12 no longer sweep in unknown-age value. The NULL-age
+    guards below are retained defensively (see the age_bucket contract)."""
     total_val = float(df["valuation"].sum()) if len(df) else 0.0
     if df.empty:
         return {"total_val": 0.0, "total_12": 0.0, "avg_age": None,
                 "pct_unslated_12": None, "items_12": 0}
-    # >1yr = over 1yr + over 2yr / pre-window
+    # >1yr = over 1yr + over 2yr
     bucket_str = df["age_bucket"].astype(str)
     in12 = (bucket_str == AGE_LABELS[-1]) | (bucket_str == AGE_LABELS[-2])
     total_12 = float(df.loc[in12, "valuation"].sum())
@@ -467,9 +478,11 @@ def aging_stats(df) -> dict:
 def stale_items(df, min_age, statuses) -> pd.DataFrame:
     """Item × status grain disposition-candidate report, valuation descending.
 
-    NULL-age rows count as stale (they are by definition pre-window / unknown-
-    origin — consistent with the oldest-bucket fold); none exist in current data.
-    ``min_age`` is in DAYS. ``statuses`` is a set of status codes.
+    ``min_age`` is in DAYS. ``statuses`` is a set of status codes. Ages are lower
+    bounds (the aging window opens ~2025-05-30), so a long-held item can sit just
+    under the threshold. The ``age.isna()`` term is defensive only — age is
+    non-NULL by construction (see the age_bucket contract) — and previously swept
+    every ageless row into the report regardless of threshold.
     """
     age = pd.to_numeric(df["age_days"], errors="coerce")
     g = df[(age.isna() | (age >= min_age))]
