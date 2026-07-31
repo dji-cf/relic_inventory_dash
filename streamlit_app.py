@@ -159,7 +159,7 @@ status_code = "A" if aging_tab else STATUS_OPTS[ss.status]
 
 
 # ── load snapshot ─────────────────────────────────────────────────────────────
-raw = data.load_onhand(ss.as_of)
+raw, pulled_at = data.load_onhand(ss.as_of)
 
 # ── global filters ────────────────────────────────────────────────────────────
 with st.expander("Filters", expanded=False):
@@ -183,7 +183,7 @@ cards = tx.stat_cards(flt)
 cfg = VIEWS[ss.view]
 
 # ── chrome ────────────────────────────────────────────────────────────────────
-st.html(style.open_fct() + style.header_html(cards, month_label(ss.as_of))
+st.html(style.open_fct() + style.header_html(cards, month_label(ss.as_of), pulled_at)
         + style.stat_cards_html(cards) + style.close_fct())
 
 

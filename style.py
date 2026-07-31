@@ -14,12 +14,30 @@ layout kept for the nested program breakdown table.
 """
 from __future__ import annotations
 
+import os
+from datetime import datetime, timezone
 from html import escape
 
 import pandas as pd
 import streamlit as st
 
 from transforms import EXT_COLS, ROLLUP_COLS, STATUS_LABELS, fmt, fmt2, fmtq
+
+# Freshness tooltips read best in the reader's own wall-clock time. The zone is
+# PINNED rather than taken from the host clock: the SiS container runs in UTC, so
+# a host-derived zone would silently differ between local dev and deployed. Set
+# DASHBOARD_TZ to any IANA name to override.
+#
+# zoneinfo is stdlib, but the tz DATABASE it reads is not guaranteed to exist in a
+# minimal container image, so a missing/unknown zone degrades to a UTC-only
+# tooltip rather than taking the header down. `tzdata` is pinned in pyproject.toml
+# to make the named-zone branch reliable on the SiS container runtime.
+try:
+    from zoneinfo import ZoneInfo
+
+    _LOCAL_TZ = ZoneInfo(os.getenv("DASHBOARD_TZ") or "America/New_York")
+except Exception:  # any lookup failure means "no local zone" -> UTC-only tooltip
+    _LOCAL_TZ = None
 
 # Shared base (fonts + palette vars): needed in the page stylesheet for the
 # chrome AND inside each table component, because page styles can't pierce
@@ -40,8 +58,17 @@ _CHROME_CSS = """
 .fct .hdr-top { display:flex; align-items:center; gap:18px; flex-wrap:wrap; }
 .fct .logo { font-size:24px; font-weight:700; letter-spacing:1px; color:#fff; line-height:1; }
 .fct .logo span { color:#7a99c0; font-size:15px; font-weight:600; }
-.fct .hdr-meta { margin-left:auto; display:flex; gap:26px; font-size:12px; color:#7a99c0; }
+/* wrap + row-gap so the 4th field (DATA PULLED) drops to a second line on a
+   narrow viewport instead of overflowing the header card. */
+.fct .hdr-meta { margin-left:auto; display:flex; gap:26px; row-gap:10px; flex-wrap:wrap;
+  font-size:12px; color:#7a99c0; }
 .fct .hdr-meta b { color:#fff; font-size:14px; display:block; margin-top:2px; }
+/* DATA PULLED carries a tooltip with the absolute timestamp; the dotted underline
+   advertises that there is something to hover. Keep the inherited display:block so
+   the value stacks under its label like every other field — width:fit-content is
+   what makes the rule hug the text instead of spanning the whole column. */
+.fct .hdr-meta .fresh { cursor:help; }
+.fct .hdr-meta .fresh b { width:fit-content; border-bottom:1px dotted #4d6a91; }
 
 /* CONTEXT BAR */
 .fct .context-bar { display:flex; align-items:center; gap:10px; margin:0 0 14px; }
@@ -230,12 +257,61 @@ def _bar(wv, nwv, csv) -> str:
     )
 
 
-def header_html(cards: dict, as_of_label: str) -> str:
+def _rel_age(secs: float) -> str:
+    """Coarse human age for a data-pull stamp ("12 min ago").
+
+    Deliberately low-resolution: the point is answering "is this stale?" at a
+    glance, not stopwatch precision. Rounds to the unit shown, and never says
+    "0 min ago" — anything under 45s reads as "just now".
+    """
+    if secs < 45:
+        return "just now"
+    mins = secs / 60
+    if mins < 60:
+        return f"{int(round(mins)) or 1} min ago"
+    hrs, rem_min = divmod(int(round(mins)), 60)
+    if hrs < 24:
+        return f"{hrs} hr ago" if rem_min == 0 else f"{hrs} hr {rem_min} min ago"
+    days = int(round(hrs / 24))
+    return "1 day ago" if days == 1 else f"{days} days ago"
+
+
+def freshness_label(pulled_at: datetime, now: datetime | None = None) -> tuple[str, str]:
+    """``(relative, absolute)`` strings for a UTC data-pull instant.
+
+    The absolute form always carries an explicit zone, and appends UTC whenever a
+    local zone is available, so a screenshot of the tooltip is never ambiguous.
+    ``now`` is injectable for tests.
+    """
+    now = now or datetime.now(timezone.utc)
+    # A stamp very slightly in the future (clock skew between the app host and
+    # wherever `now` came from) must not render as a negative age.
+    rel = _rel_age(max(0.0, (now - pulled_at).total_seconds()))
+    utc_txt = pulled_at.strftime("%b %d, %Y %H:%M UTC")
+    if _LOCAL_TZ is None:
+        return rel, utc_txt
+    local = pulled_at.astimezone(_LOCAL_TZ)
+    # Build 12-hour time by hand: the %-I / %#I no-pad flags are platform-specific.
+    hour12 = local.strftime("%I").lstrip("0") or "12"
+    stamp = f"{local.strftime('%b %d, %Y')} {hour12}:{local.strftime('%M %p')}"
+    return rel, f"{stamp} {local.tzname()} ({utc_txt})"
+
+
+def header_html(cards: dict, as_of_label: str, pulled_at: datetime | None = None) -> str:
+    # DATA PULLED sits next to AS OF so the two time facts read together, but they
+    # answer different questions: AS OF is the monthly valuation PERIOD (the source
+    # has no finer grain), while DATA PULLED is when this app last hit Snowflake.
+    fresh = ""
+    if pulled_at is not None:
+        rel, abs_txt = freshness_label(pulled_at)
+        fresh = (f'<div class="fresh" title="Last query against Snowflake: '
+                 f'{escape(abs_txt)}">DATA PULLED<b>{escape(rel)}</b></div>')
     return (
         '<div class="hdr"><div class="hdr-top">'
         '<div class="logo">FCT Relic <span>/ Inventory Dashboard</span></div>'
         '<div class="hdr-meta">'
         f'<div>AS OF<b>{escape(as_of_label)}</b></div>'
+        f'{fresh}'
         f'<div>BRANDS<b>{cards["brands"]}</b></div>'
         f'<div>TOTAL VALUE<b>{fmt2(cards["total_val"])}</b></div>'
         "</div></div></div>"

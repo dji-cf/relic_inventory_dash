@@ -11,6 +11,10 @@ dependencies = [
     "altair>=5",
     "openpyxl>=3.1",
     "requests>=2.31",
+    # zoneinfo is stdlib but reads an OS tz database that a slim container image
+    # may not ship; this guarantees America/Los_Angeles resolves so the DATA
+    # PULLED tooltip shows local time (style.py falls back to UTC without it).
+    "tzdata",
 ]
 
 [build-system]

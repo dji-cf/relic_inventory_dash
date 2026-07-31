@@ -16,7 +16,7 @@ detect those and connect as the service's owner role.
 from __future__ import annotations
 
 import os
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import streamlit as st
@@ -119,19 +119,28 @@ def available_months() -> list[str]:
 
 
 @st.cache_data(ttl=timedelta(hours=2), show_spinner="Loading on-hand snapshot…")
-def load_onhand(as_of: str) -> pd.DataFrame:
+def load_onhand(as_of: str) -> tuple[pd.DataFrame, datetime]:
     """Item + subinventory-bin grain on-hand snapshot as-of ``as_of`` (YYYY-MM-DD).
 
     Valuation is the authoritative ITEM_INV_VALU for the period, allocated across
     on-hand bins by qty share; qty is computed cumulatively from the raw txn views.
     Covers ONLY items present in FCT_INVENTORY_AGING, the authority on what is
     actually on hand (see queries.ITEM_AGE_CTE) — as does ``load_history``, so the
-    two agree. Returns a tidy DataFrame; all pivots/drill-downs run in pandas.
+    two agree. All pivots/drill-downs run in pandas.
+
+    Returns ``(df, pulled_at)``. ``pulled_at`` is the UTC instant the SELECT
+    actually ran, captured INSIDE the cached body so a cache HIT keeps the original
+    pull time — that is what makes it a real freshness stamp instead of a render
+    clock. ``st.cache_data.clear()`` (the ↻ Refresh button) forces a new pull and
+    therefore a new stamp. The inner ``conn.query`` cache carries the same 2h TTL
+    and is keyed off the same as_of-embedded SQL text, so both layers fill and
+    expire together and the stamp cannot drift away from the data it describes.
     """
     df = _connection().query(
         queries.onhand_sql(as_of),  # date embedded in SQL text (see queries.onhand_sql)
         ttl=timedelta(hours=2),
     )
+    pulled_at = datetime.now(timezone.utc)
     df.columns = [c.lower() for c in df.columns]
     df["qty_onhand"] = pd.to_numeric(df["qty_onhand"], errors="coerce").fillna(0.0)
     df["valuation"] = pd.to_numeric(df["valuation"], errors="coerce").fillna(0.0)
@@ -144,7 +153,7 @@ def load_onhand(as_of: str) -> pd.DataFrame:
     df["age_days"] = pd.to_numeric(df["age_days"], errors="coerce").astype("Int64")
     df["age_date"] = pd.to_datetime(df["age_date"], errors="coerce")
     df["age_bucket"] = tx.age_bucket(df["age_days"])
-    return df
+    return df, pulled_at
 
 
 @st.cache_data(ttl=timedelta(hours=2), show_spinner="Loading monthly history…")
