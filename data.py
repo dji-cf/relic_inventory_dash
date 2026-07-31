@@ -124,7 +124,9 @@ def load_onhand(as_of: str) -> pd.DataFrame:
 
     Valuation is the authoritative ITEM_INV_VALU for the period, allocated across
     on-hand bins by qty share; qty is computed cumulatively from the raw txn views.
-    Returns a tidy DataFrame; all downstream pivots/drill-downs run in pandas.
+    Covers ONLY items present in FCT_INVENTORY_AGING, the authority on what is
+    actually on hand (see queries.ITEM_AGE_CTE) — as does ``load_history``, so the
+    two agree. Returns a tidy DataFrame; all pivots/drill-downs run in pandas.
     """
     df = _connection().query(
         queries.onhand_sql(as_of),  # date embedded in SQL text (see queries.onhand_sql)
@@ -135,8 +137,10 @@ def load_onhand(as_of: str) -> pd.DataFrame:
     df["valuation"] = pd.to_numeric(df["valuation"], errors="coerce").fillna(0.0)
     # Composite subject key (a subject can appear under multiple brands).
     df["subj_key"] = df["brand"] + " ||| " + df["subject_name"]
-    # Aging: age_days is nullable (NULL only for an item with no receipt in FCT
-    # view); age_bucket folds any NULL into the oldest bucket so totals reconcile.
+    # Aging: age_days is now guaranteed non-NULL and >= 0 — queries.ITEM_AGE_CTE is
+    # INNER JOINed (an item with no FCT_INVENTORY_AGING row is excluded from the
+    # dashboard entirely) and the age is clamped at 0. The Int64 dtype and the
+    # coerce stay as cheap defenses; nothing downstream should rely on NULL age.
     df["age_days"] = pd.to_numeric(df["age_days"], errors="coerce").astype("Int64")
     df["age_date"] = pd.to_datetime(df["age_date"], errors="coerce")
     df["age_bucket"] = tx.age_bucket(df["age_days"])

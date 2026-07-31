@@ -367,11 +367,12 @@ def render_inventory():
         export_df = (
             items.assign(subject=subj_v, brand=brand_v,
                          status=items["status"].map(tx.STATUS_LABELS))
-            [["item_number", "subject", "brand", "team", "relic_form_type",
-              "item_used_status", "qty_onhand", "valuation", "status",
-              "program", "age_days"]]
+            [["item_number", "item_description", "subject", "brand", "team",
+              "relic_form_type", "item_used_status", "qty_onhand", "valuation",
+              "status", "program", "age_days"]]
             .rename(columns={
-                "item_number": "Item #", "subject": "Subject", "brand": "Brand",
+                "item_number": "Item #", "item_description": "Description",
+                "subject": "Subject", "brand": "Brand",
                 "team": "Team", "relic_form_type": "Form Type",
                 "item_used_status": "Used Status", "qty_onhand": "Qty On Hand",
                 "valuation": "Valuation (USD)", "status": "Status",
@@ -496,8 +497,11 @@ def render_aging():
     df = tx.apply_filters(raw, status="A", team=g_team, formtype=g_ft,
                           usedstatus=g_us, brand=g_brand)
     st.caption("Aging spans all statuses; the stale report has its own status filter. "
-               "Age basis: earliest procurement month (true receipt date pending) — "
-               "the oldest bucket includes pre-window inventory.")
+               "Age basis: earliest true RECEIPT_DATE from FCT_INVENTORY_AGING, which "
+               "also defines the on-hand universe for the whole dashboard — items it "
+               "doesn't carry are excluded everywhere. Ages are LOWER BOUNDS: the "
+               "aging window opens 2025-05-30, so anything received earlier reports "
+               "that date, and a receipt later in the as-of month counts as 0 days.")
     st.html(style.open_fct() + style.aging_cards_html(tx.aging_stats(df)) + style.close_fct())
 
     st.html(style.open_fct() + '<div class="sec-title">AGE PROFILE — VALUE BY BUCKET AND STATUS</div>' + style.close_fct())

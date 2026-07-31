@@ -133,6 +133,12 @@ TABLE_CSS = _BASE_CSS + """
 .fct .td-slated { color:var(--nonwhole); }
 .fct .td-unslated { color:var(--whole); }
 .fct .td-age { color:var(--muted); }
+/* item-panel DESCRIPTION: deliberately NOT truncated — the cell sizes to its
+   content and .table-wrap scrolls horizontally. Descriptions run to ~160 chars
+   (p90 is 76), so any max-width here clips the long tail, which is exactly what
+   this column is meant to avoid. See the ITEM # sticky rule below: it is what
+   keeps rows identifiable once the table is scrolled sideways. */
+.fct td.td-desc { text-align:left; white-space:nowrap; }
 .fct .td-trend { white-space:nowrap; }
 .fct .td-trend svg.spark { vertical-align:middle; margin-right:6px; }
 .fct .chip { display:inline-block; font-size:10px; font-weight:700; padding:1px 6px;
@@ -158,6 +164,24 @@ TABLE_CSS = _BASE_CSS + """
 .fct tbody tr.selected td:first-child { padding-left:13px; }
 /* keep the sticky app header + panel heading/search visible on scrollIntoView */
 .fct .table-wrap { scroll-margin-top:160px; }
+
+/* PINNED FIRST COLUMN: the uncapped DESCRIPTION cell (see .td-desc) lets the
+   item table grow past its container, and .table-wrap scrolls horizontally.
+   Pin the name column so every row stays identifiable when scrolled right.
+   z-index stays at 1 — BELOW the sticky thead/tfoot (z-index:2) — so the header
+   and TOTAL footer still paint over it at the corners. A sticky cell is
+   transparent by default, so the tbody backgrounds below are required or
+   scrolling content shows through; .selected comes last to beat :hover on the
+   same specificity, matching how the row-level rules already resolve.
+   tfoot is deliberately NOT pinned: its first cell is a wide colspan (8 in the
+   item table), so pinning it would park a multi-column background at the left
+   edge while the columns it spans scroll underneath. The footer numbers stay
+   aligned under their own columns instead. */
+.fct thead th:first-child,
+.fct tbody td:first-child { position:sticky; left:0; z-index:1; }
+.fct tbody td:first-child { background:var(--surface); }
+.fct tbody tr:hover td:first-child { background:var(--surface2); }
+.fct tbody tr.selected td:first-child { background:#eff6ff; }
 
 /* ROWS-PER-VIEW CAP: .scrollable is toggled by interactive.py's JS when a
    max_height is passed. Bound the height, scroll the overflow, and pin the
@@ -266,12 +290,12 @@ def aging_cards_html(a: dict) -> str:
     share = (a["total_12"] / a["total_val"] * 100.0) if a.get("total_val") else 0.0
     return (
         '<div class="stat-cards">'
-        '<div class="stat-card total"><div class="lbl">VALUE >1YR / PRE-WINDOW</div>'
+        '<div class="stat-card total"><div class="lbl">VALUE >1YR</div>'
         f'<div class="val" style="color:var(--gold)">{fmt(a["total_12"])}</div>'
         f'<div class="sub">{share:.0f}% of filtered value</div></div>'
         '<div class="stat-card"><div class="lbl">VALUE-WEIGHTED AVG AGE</div>'
         f'<div class="val" style="color:var(--accent)">{avg}</div>'
-        '<div class="sub">over items with a known age basis</div></div>'
+        '<div class="sub">age is a lower bound (see note)</div></div>'
         '<div class="stat-card cutsig"><div class="lbl">UNSLATED VALUE >1YR</div>'
         f'<div class="val" style="color:var(--cutsig)">{pct}</div>'
         '<div class="sub">share of unslated value</div></div>'
@@ -485,8 +509,8 @@ def subject_table_html(subs, show_brand_sublabel: bool = False,
 
 def item_table_html(items) -> str:
     """Item × status grain detail table (one row per item and status)."""
-    headers = ["ITEM #", "TEAM", "FORM TYPE", "USED STATUS", "STATUS", "PROGRAM",
-               "AGE", "QTY", "UNIT COST", "VALUATION"]
+    headers = ["ITEM #", "DESCRIPTION", "TEAM", "FORM TYPE", "USED STATUS",
+               "STATUS", "PROGRAM", "AGE", "QTY", "UNIT COST", "VALUATION"]
     ncols = len(headers)
     head = "<tr>" + "".join(
         f'<th class="th-total">{h}</th>' if h == "VALUATION" else f"<th>{h}</th>"
@@ -498,9 +522,12 @@ def item_table_html(items) -> str:
         age_txt = "—" if pd.isna(age) else f"{int(age)}d"
         scode = str(r["status"])
         slabel = STATUS_LABELS.get(scode, scode)
+        desc = r["item_description"]
+        desc_txt = "—" if pd.isna(desc) or not str(desc) else str(desc)
         rows.append(
             "<tr>"
             f'<td>{escape(str(r["item_number"]))}</td>'
+            f'<td class="td-desc" title="{escape(desc_txt)}">{escape(desc_txt)}</td>'
             f'<td style="text-align:left">{escape(str(r["team"]) or "—")}</td>'
             f'<td style="text-align:left">{escape(str(r["relic_form_type"]) or "—")}</td>'
             f'<td style="text-align:left">{escape(str(r["item_used_status"]) or "—")}</td>'

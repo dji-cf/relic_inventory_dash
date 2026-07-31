@@ -20,6 +20,24 @@ first-of-month stamped and maps 1:1 to `PERIOD_NAME`. Source columns are TEXT an
 are cast in SQL. The period list is sourced from the snapshot view. See
 [`queries.py`](queries.py).
 
+**`FCT_INVENTORY_AGING` defines the item universe.** Computed cumulative quantity
+can disagree with Oracle about what is really on hand, so `queries.ITEM_AGE_CTE` is
+**INNER JOINed** by both the as-of snapshot and the multi-month history: an item that
+view doesn't carry is excluded from *every* tab. The gate is per item and
+all-or-nothing, so the valuation allocation stays exact for retained items and the
+portfolio total still reconciles to the period's `TOTAL_INV_VALU`. Membership is
+tested without a date condition, so the snapshot and the history span the same
+universe in every month (`data.history_matches_snapshot` relies on this). Note that
+the view is a **live** snapshot with no as-of dimension: historical months therefore
+exclude items consumed since, and TRENDS restates downward for older months as
+inventory is drawn down.
+
+**Aging** is the earliest true `RECEIPT_DATE` from that view (`STREET_DATE` is
+deliberately unused). Every age is a **lower bound** — the window opens 2025-05-30,
+so an item received earlier reports the window-open date, and `over 2yr` stays empty
+until 2027-05-30. A receipt falling later in the as-of month than the first-of-month
+`TXN_DATE` stamp clamps to age 0 (`0-90`) rather than being treated as ageless.
+
 ### Classification (confirmed against the data)
 - **WHOLE** = `ITEM_NUMBER` starts with `MEM`
 - **CUT SIG** = `RELIC_FORM_TYPE = 'CUT SIGNATURE'`
