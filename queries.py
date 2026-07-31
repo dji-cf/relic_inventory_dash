@@ -21,6 +21,7 @@ import re
 REC_VIEW = "ORACLE_DATA_PROD.ATHLETE_SPEND.ATH_SPEND_REC_RELIC_RAW_V"
 CON_VIEW = "ORACLE_DATA_PROD.ATHLETE_SPEND.ATH_SPEND_CON_RELIC_RAW_V"
 VAL_VIEW = "ORACLE_DATA_PROD.ATHLETE_SPEND.ATH_SPEND_RELIC_ITEM_INV_VAL_V"
+AGING_VIEW = "ORACLE_DATA_PROD.ATHLETE_SPEND.FCT_INVENTORY_AGING"
 
 _AS_OF_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -33,6 +34,47 @@ FROM {VAL_VIEW}
 WHERE PERIOD_NAME IS NOT NULL
 ORDER BY as_of
 """
+
+# One row per ITEM_NUMBER over EVERY item FCT_INVENTORY_AGING vouches for. Three
+# jobs, all shared by onhand_sql and HISTORY_SQL — hence a parameterless constant
+# rather than a per-date builder:
+#
+#   1. THE ITEM UNIVERSE. Both queries INNER JOIN this CTE, so an item absent from
+#      FCT_INVENTORY_AGING is excluded from the ENTIRE dashboard. That view is the
+#      authority on what is actually on hand; our qty is *computed* cumulatively
+#      from the txn views and can disagree. The gate is per ITEM and
+#      all-or-nothing, so an excluded item drops all of its bins together: the
+#      allocation denominators (item_qty / item_qty_hist) stay exact for every
+#      retained item and no value leaks into a sibling bin.
+#      Membership only — deliberately NO per-month date test — so the snapshot and
+#      the history query span the same universe in every month and
+#      data.history_matches_snapshot keeps reconciling.
+#
+#   2. SINGLE POINT OF CHANGE for item aging. The basis is the earliest true
+#      RECEIPT_DATE (VARCHAR MM/DD/YYYY, parsed with TRY_TO_DATE); STREET_DATE is
+#      deliberately NOT used. The aging window opens ~2025-05-30, so an item
+#      received before then reports the window-open date and its age is a LOWER
+#      BOUND.
+#
+#   3. ITEM_DESCRIPTION, which only this view carries. It is 1:1 with ITEM_NUMBER,
+#      so MAX just collapses the per-receipt rows.
+#
+# This CTE used to filter `WHERE receipt <= as_of`, which together with a LEFT JOIN
+# stranded every item whose earliest receipt fell later in the as-of month than the
+# first-of-month TXN_DATE stamp: age_date came back NULL and transforms.age_bucket
+# folded it into the OLDEST bucket, so brand-new inventory (5,386 items / $6.3M at
+# Jul-2026) was reported as "over 2yr / pre-window" — and its description was blank.
+# The filter is gone; onhand_sql clamps age_days at 0 instead, landing those rows in
+# 0-90. Output contract: (ITEM_NUMBER, age_date, item_description) — do not change.
+ITEM_AGE_CTE = f"""
+    item_age AS (
+        SELECT ITEM_NUMBER,
+               MIN(TRY_TO_DATE(RECEIPT_DATE, 'MM/DD/YYYY')) AS age_date,
+               MAX(ITEM_DESCRIPTION)                        AS item_description
+        FROM {AGING_VIEW}
+        GROUP BY ITEM_NUMBER
+    )"""
+
 
 # Item + subinventory-bin grain on-hand snapshot as-of :as_of.
 # Returns the classification columns the dashboard pivots on:
@@ -53,28 +95,6 @@ ORDER BY as_of
 # sidesteps that entirely and is version-independent, so it stays even though SiS
 # now runs 1.58. `as_of` comes from MONTHS_SQL, but we still assert the
 # YYYY-MM-DD shape before interpolating.
-def item_age_cte(d: str) -> str:
-    """CTE giving one row per ITEM_NUMBER with AGE_DATE = the item's age-basis date.
-
-    SINGLE POINT OF CHANGE for item aging. Today the age basis is the earliest
-    procurement TXN_DATE (month-granular; the data window opens ~2025-05 so ages
-    are censored / lower bounds). When the true receipt-date field is identified,
-    replace ONLY this function body -- the output contract (ITEM_NUMBER, AGE_DATE)
-    must stay the same so every downstream consumer keeps working.
-
-    ``d`` is a SQL DATE expression (e.g. ``TO_DATE('2026-05-01')``). TXN_DATE is a
-    native DATE column (verified via DESCRIBE), so no TRY_TO_DATE cast is needed;
-    WHERE TXN_DATE <= d guarantees AGE_DATE <= as-of and thus age_months >= 0.
-    """
-    return f"""
-    item_age AS (
-        SELECT ITEM_NUMBER, MIN(TXN_DATE) AS age_date
-        FROM {REC_VIEW}
-        WHERE TXN_DATE <= {d}
-        GROUP BY ITEM_NUMBER
-    )"""
-
-
 def onhand_sql(as_of: str) -> str:
     """Build the on-hand snapshot SQL for ``as_of`` (YYYY-MM-DD)."""
     if not _AS_OF_RE.match(as_of):
@@ -114,9 +134,10 @@ val AS (
     SELECT ITEM_NUMBER, ITEM_INV_VALU
     FROM {VAL_VIEW}
     WHERE TO_DATE('01-' || PERIOD_NAME, 'DD-MON-YY') = {d}
-),{item_age_cte(d)}
+),{ITEM_AGE_CTE}
 SELECT
     COALESCE(NULLIF(TRIM(b.ITEM_NUMBER), ''), 'OTHER')             AS item_number,
+    a.item_description                                             AS item_description,
     COALESCE(NULLIF(TRIM(b.SUBJECT_NAME), ''), 'OTHER')           AS subject_name,
     COALESCE(NULLIF(TRIM(b.BRAND), ''), 'OTHER')                  AS brand,
     UPPER(COALESCE(NULLIF(TRIM(b.TEAM), ''), ''))                   AS team,
@@ -145,11 +166,16 @@ SELECT
         ELSE NULL
     END AS program,
     a.age_date                                                     AS age_date,
-    DATEDIFF('month', a.age_date, {d})                             AS age_months
+    -- GREATEST(0, ...) because the age basis is a true receipt DATE while the
+    -- as-of date is a first-of-month stamp: an item received later in the as-of
+    -- month is genuinely on hand but would score a negative age. It clamps to 0
+    -- (the 0-90 bucket), which is the truthful floor for brand-new inventory.
+    GREATEST(0, DATEDIFF('day', a.age_date, {d}))    AS age_days
 FROM bins b
 JOIN item_qty iq      ON iq.ITEM_NUMBER = b.ITEM_NUMBER
 LEFT JOIN val v       ON v.ITEM_NUMBER = b.ITEM_NUMBER
-LEFT JOIN item_age a  ON a.ITEM_NUMBER = b.ITEM_NUMBER
+-- INNER JOIN: this is the on-hand gate. See ITEM_AGE_CTE.
+JOIN item_age a       ON a.ITEM_NUMBER = b.ITEM_NUMBER
 """
 
 
@@ -168,6 +194,13 @@ LEFT JOIN item_age a  ON a.ITEM_NUMBER = b.ITEM_NUMBER
 #   * TO_DATE('01-' || PERIOD_NAME, 'DD-MON-YY') for every period conversion
 #   * identical NULLIF/TRIM guards and itype / status / program CASE expressions
 #   * cumulative on-hand rule TXN_DATE <= month, LEFT JOIN valuation + COALESCE
+#   * the SAME item universe: INNER JOIN item_age (see ITEM_AGE_CTE). Membership
+#     only, with no per-month date test, so history spans exactly the universe the
+#     snapshot does in every month and data.history_matches_snapshot holds. NOTE
+#     that FCT_INVENTORY_AGING is a LIVE snapshot, so older months legitimately
+#     lose items consumed since — history restates as inventory is consumed.
+#   * no age columns: history has never carried them and
+#     transforms._typed_value_cols already handles frames without age_days.
 #
 # HAVING SUM(qty) > 0 is applied at (item x subinventory x locator) grain; program
 # is derived in the OUTER select only -- collapsing locator -> program before the
@@ -200,7 +233,7 @@ monthly_net AS (
            SUM(qty) AS qty
     FROM txns
     GROUP BY 1,2,3,4,5,6,7,8,9
-),
+),{ITEM_AGE_CTE},
 bins_hist AS (
     -- cumulative on-hand per month at item x subinventory x locator grain
     SELECT m.month_start,
@@ -209,6 +242,9 @@ bins_hist AS (
            SUM(n.qty) AS qty_onhand
     FROM months m
     JOIN monthly_net n ON n.txn_month <= m.month_start
+    -- on-hand gate, applied BEFORE the HAVING so item_qty_hist (built off this
+    -- CTE) stays an exact denominator for every retained item
+    JOIN item_age a    ON a.ITEM_NUMBER = n.ITEM_NUMBER
     GROUP BY 1,2,3,4,5,6,7,8,9
     HAVING SUM(n.qty) > 0
 ),

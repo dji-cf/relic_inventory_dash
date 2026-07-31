@@ -110,40 +110,44 @@ def _connection():
     return conn
 
 
-@st.cache_data(ttl=timedelta(hours=6), show_spinner=False)
+@st.cache_data(ttl=timedelta(hours=2), show_spinner=False)
 def available_months() -> list[str]:
     """Distinct as-of month stamps (ascending) for the date selector."""
-    df = _connection().query(queries.MONTHS_SQL, ttl=timedelta(hours=6))
+    df = _connection().query(queries.MONTHS_SQL, ttl=timedelta(hours=2))
     col = df.columns[0]
     return [pd.Timestamp(v).strftime("%Y-%m-%d") for v in df[col].tolist()]
 
 
-@st.cache_data(ttl=timedelta(hours=6), show_spinner="Loading on-hand snapshot…")
+@st.cache_data(ttl=timedelta(hours=2), show_spinner="Loading on-hand snapshot…")
 def load_onhand(as_of: str) -> pd.DataFrame:
     """Item + subinventory-bin grain on-hand snapshot as-of ``as_of`` (YYYY-MM-DD).
 
     Valuation is the authoritative ITEM_INV_VALU for the period, allocated across
     on-hand bins by qty share; qty is computed cumulatively from the raw txn views.
-    Returns a tidy DataFrame; all downstream pivots/drill-downs run in pandas.
+    Covers ONLY items present in FCT_INVENTORY_AGING, the authority on what is
+    actually on hand (see queries.ITEM_AGE_CTE) — as does ``load_history``, so the
+    two agree. Returns a tidy DataFrame; all pivots/drill-downs run in pandas.
     """
     df = _connection().query(
         queries.onhand_sql(as_of),  # date embedded in SQL text (see queries.onhand_sql)
-        ttl=timedelta(hours=6),
+        ttl=timedelta(hours=2),
     )
     df.columns = [c.lower() for c in df.columns]
     df["qty_onhand"] = pd.to_numeric(df["qty_onhand"], errors="coerce").fillna(0.0)
     df["valuation"] = pd.to_numeric(df["valuation"], errors="coerce").fillna(0.0)
     # Composite subject key (a subject can appear under multiple brands).
     df["subj_key"] = df["brand"] + " ||| " + df["subject_name"]
-    # Aging: age_months is nullable (NULL only for an item with no procurement
-    # row); age_bucket folds any NULL into the oldest bucket so totals reconcile.
-    df["age_months"] = pd.to_numeric(df["age_months"], errors="coerce").astype("Int64")
+    # Aging: age_days is now guaranteed non-NULL and >= 0 — queries.ITEM_AGE_CTE is
+    # INNER JOINed (an item with no FCT_INVENTORY_AGING row is excluded from the
+    # dashboard entirely) and the age is clamped at 0. The Int64 dtype and the
+    # coerce stay as cheap defenses; nothing downstream should rely on NULL age.
+    df["age_days"] = pd.to_numeric(df["age_days"], errors="coerce").astype("Int64")
     df["age_date"] = pd.to_datetime(df["age_date"], errors="coerce")
-    df["age_bucket"] = tx.age_bucket(df["age_months"])
+    df["age_bucket"] = tx.age_bucket(df["age_days"])
     return df
 
 
-@st.cache_data(ttl=timedelta(hours=6), show_spinner="Loading monthly history…")
+@st.cache_data(ttl=timedelta(hours=2), show_spinner="Loading monthly history…")
 def load_history() -> pd.DataFrame:
     """Cumulative on-hand balance for every valuation period (month x item x
     subinventory x program grain), for the TRENDS tab and INVENTORY sparklines.
@@ -153,7 +157,7 @@ def load_history() -> pd.DataFrame:
     ``load_onhand``'s post-processing; ``month`` is a YYYY-MM-DD string so it
     lines up with ``available_months()`` / ``ss.as_of`` with no dtype friction.
     """
-    df = _connection().query(queries.HISTORY_SQL, ttl=timedelta(hours=6))
+    df = _connection().query(queries.HISTORY_SQL, ttl=timedelta(hours=2))
     df.columns = [c.lower() for c in df.columns]
     df["qty_onhand"] = pd.to_numeric(df["qty_onhand"], errors="coerce").fillna(0.0)
     df["valuation"] = pd.to_numeric(df["valuation"], errors="coerce").fillna(0.0)

@@ -19,7 +19,7 @@ from html import escape
 import pandas as pd
 import streamlit as st
 
-from transforms import EXT_COLS, ROLLUP_COLS, STATUS_LABELS, fmt, fmtq
+from transforms import EXT_COLS, ROLLUP_COLS, STATUS_LABELS, fmt, fmt2, fmtq
 
 # Shared base (fonts + palette vars): needed in the page stylesheet for the
 # chrome AND inside each table component, because page styles can't pierce
@@ -133,6 +133,12 @@ TABLE_CSS = _BASE_CSS + """
 .fct .td-slated { color:var(--nonwhole); }
 .fct .td-unslated { color:var(--whole); }
 .fct .td-age { color:var(--muted); }
+/* item-panel DESCRIPTION: deliberately NOT truncated — the cell sizes to its
+   content and .table-wrap scrolls horizontally. Descriptions run to ~160 chars
+   (p90 is 76), so any max-width here clips the long tail, which is exactly what
+   this column is meant to avoid. See the ITEM # sticky rule below: it is what
+   keeps rows identifiable once the table is scrolled sideways. */
+.fct td.td-desc { text-align:left; white-space:nowrap; }
 .fct .td-trend { white-space:nowrap; }
 .fct .td-trend svg.spark { vertical-align:middle; margin-right:6px; }
 .fct .chip { display:inline-block; font-size:10px; font-weight:700; padding:1px 6px;
@@ -158,6 +164,24 @@ TABLE_CSS = _BASE_CSS + """
 .fct tbody tr.selected td:first-child { padding-left:13px; }
 /* keep the sticky app header + panel heading/search visible on scrollIntoView */
 .fct .table-wrap { scroll-margin-top:160px; }
+
+/* PINNED FIRST COLUMN: the uncapped DESCRIPTION cell (see .td-desc) lets the
+   item table grow past its container, and .table-wrap scrolls horizontally.
+   Pin the name column so every row stays identifiable when scrolled right.
+   z-index stays at 1 — BELOW the sticky thead/tfoot (z-index:2) — so the header
+   and TOTAL footer still paint over it at the corners. A sticky cell is
+   transparent by default, so the tbody backgrounds below are required or
+   scrolling content shows through; .selected comes last to beat :hover on the
+   same specificity, matching how the row-level rules already resolve.
+   tfoot is deliberately NOT pinned: its first cell is a wide colspan (8 in the
+   item table), so pinning it would park a multi-column background at the left
+   edge while the columns it spans scroll underneath. The footer numbers stay
+   aligned under their own columns instead. */
+.fct thead th:first-child,
+.fct tbody td:first-child { position:sticky; left:0; z-index:1; }
+.fct tbody td:first-child { background:var(--surface); }
+.fct tbody tr:hover td:first-child { background:var(--surface2); }
+.fct tbody tr.selected td:first-child { background:#eff6ff; }
 
 /* ROWS-PER-VIEW CAP: .scrollable is toggled by interactive.py's JS when a
    max_height is passed. Bound the height, scroll the overflow, and pin the
@@ -213,7 +237,7 @@ def header_html(cards: dict, as_of_label: str) -> str:
         '<div class="hdr-meta">'
         f'<div>AS OF<b>{escape(as_of_label)}</b></div>'
         f'<div>BRANDS<b>{cards["brands"]}</b></div>'
-        f'<div>TOTAL VALUE<b>{fmt(cards["total_val"])}</b></div>'
+        f'<div>TOTAL VALUE<b>{fmt2(cards["total_val"])}</b></div>'
         "</div></div></div>"
     )
 
@@ -244,38 +268,38 @@ def stat_cards_html(c: dict) -> str:
     return (
         '<div class="stat-cards">'
         '<div class="stat-card total"><div class="lbl">TOTAL INVENTORY VALUE</div>'
-        f'<div class="val" style="color:var(--gold)">{fmt(c["total_val"])}</div>'
+        f'<div class="val" style="color:var(--gold)">{fmt2(c["total_val"])}</div>'
         f'<div class="sub">{c["brands"]} brands &nbsp;·&nbsp; {fmtq(c["total_subj"])} subjects</div></div>'
         '<div class="stat-card"><div class="lbl">◆ WHOLE VALUE</div>'
-        f'<div class="val" style="color:var(--whole)">{fmt(c["whole_val"])}</div>'
-        f'<div class="sub">{fmtq(c["whole_qty"])} items &nbsp;·&nbsp; {fmtq(c["whole_subj"])} subjects</div></div>'
+        f'<div class="val" style="color:var(--whole)">{fmt2(c["whole_val"])}</div>'
+        f'<div class="sub">{fmtq(c["whole_items"])} distinct items &nbsp;·&nbsp; {fmtq(c["whole_subj"])} subjects</div></div>'
         '<div class="stat-card nonwhole"><div class="lbl">◆ NON-WHOLE VALUE</div>'
-        f'<div class="val" style="color:var(--nonwhole)">{fmt(c["nonwhole_val"])}</div>'
-        f'<div class="sub">{fmtq(c["nonwhole_qty"])} items &nbsp;·&nbsp; {fmtq(c["nonwhole_subj"])} subjects</div></div>'
+        f'<div class="val" style="color:var(--nonwhole)">{fmt2(c["nonwhole_val"])}</div>'
+        f'<div class="sub">{fmtq(c["nonwhole_items"])} distinct items &nbsp;·&nbsp; {fmtq(c["nonwhole_subj"])} subjects</div></div>'
         '<div class="stat-card cutsig"><div class="lbl">◆ CUT SIG VALUE</div>'
-        f'<div class="val" style="color:var(--cutsig)">{fmt(c["cutsig_val"])}</div>'
-        f'<div class="sub">{fmtq(c["cutsig_qty"])} items &nbsp;·&nbsp; {fmtq(c["cutsig_subj"])} subjects</div></div>'
+        f'<div class="val" style="color:var(--cutsig)">{fmt2(c["cutsig_val"])}</div>'
+        f'<div class="sub">{fmtq(c["cutsig_items"])} distinct items &nbsp;·&nbsp; {fmtq(c["cutsig_subj"])} subjects</div></div>'
         "</div>"
     )
 
 
 def aging_cards_html(a: dict) -> str:
     """Headline aging cards for the AGING tab (reuses the .stat-card chrome)."""
-    avg = "—" if a.get("avg_age") is None else f'{a["avg_age"]:.1f} mo'
+    avg = "—" if a.get("avg_age") is None else f'{a["avg_age"]:.0f} days'
     pct = "—" if a.get("pct_unslated_12") is None else f'{a["pct_unslated_12"]:.0f}%'
     share = (a["total_12"] / a["total_val"] * 100.0) if a.get("total_val") else 0.0
     return (
         '<div class="stat-cards">'
-        '<div class="stat-card total"><div class="lbl">VALUE 12+ MO / PRE-WINDOW</div>'
+        '<div class="stat-card total"><div class="lbl">VALUE >1YR</div>'
         f'<div class="val" style="color:var(--gold)">{fmt(a["total_12"])}</div>'
         f'<div class="sub">{share:.0f}% of filtered value</div></div>'
         '<div class="stat-card"><div class="lbl">VALUE-WEIGHTED AVG AGE</div>'
         f'<div class="val" style="color:var(--accent)">{avg}</div>'
-        '<div class="sub">over items with a known age basis</div></div>'
-        '<div class="stat-card cutsig"><div class="lbl">UNSLATED VALUE 12+ MO</div>'
+        '<div class="sub">age is a lower bound (see note)</div></div>'
+        '<div class="stat-card cutsig"><div class="lbl">UNSLATED VALUE >1YR</div>'
         f'<div class="val" style="color:var(--cutsig)">{pct}</div>'
         '<div class="sub">share of unslated value</div></div>'
-        '<div class="stat-card nonwhole"><div class="lbl">ITEMS 12+ MO</div>'
+        '<div class="stat-card nonwhole"><div class="lbl">ITEMS >1YR</div>'
         f'<div class="val" style="color:var(--nonwhole)">{fmtq(a["items_12"])}</div>'
         '<div class="sub">distinct item numbers</div></div>'
         "</div>"
@@ -327,13 +351,13 @@ def _trend_cell(entry) -> str:
 # ── column-spec table machinery ───────────────────────────────────────────────
 # A column group is (group_label, header_css, [(col_header, cell_fn, td_css)]).
 # cell_fn(d) formats a cell from either a row Series or the footer totals dict,
-# so footer ratios (avg age, %12+) derive from the summed additive columns.
+# so footer ratios (avg age, %>1yr) derive from the summed additive columns.
 _SUMMABLE = set(ROLLUP_COLS + EXT_COLS)
 
 
 def _fmt_avg_age(d) -> str:
     av = float(d["av"] or 0)
-    return f'{float(d["agev"]) / av:.1f} mo' if av > 0 else "—"
+    return f'{float(d["agev"]) / av:.0f} days' if av > 0 else "—"
 
 
 def _fmt_pct12(d) -> str:
@@ -363,7 +387,7 @@ _STATUS_GROUP = ("◆ STATUS", "th-status", [
 ])
 _AGE_GROUP = ("◆ AGE", "th-age", [
     ("AVG AGE", _fmt_avg_age, "td-age"),
-    ("%12+ VAL", _fmt_pct12, "td-age"),
+    ("%>1yr VAL", _fmt_pct12, "td-age"),
 ])
 
 
@@ -382,7 +406,8 @@ def _col_groups(col_set: str, three_stats: bool):
 
 
 def _table_html(groups, first_header, frame, name_cell, row_attrs, spark_key,
-                sparks, foot_label, empty_msg) -> str:
+                sparks, foot_label, empty_msg,
+                totals_override: dict | None = None) -> str:
     """Shared builder for the pivot + subject drill tables."""
     has_trend = sparks is not None
     ghead = ['<tr class="cg"><th></th>']
@@ -412,6 +437,9 @@ def _table_html(groups, first_header, frame, name_cell, row_attrs, spark_key,
                 f'padding:30px">{empty_msg}</td></tr>']
 
     totals = {c: frame[c].sum() for c in frame.columns if c in _SUMMABLE}
+    # distinct-count columns (ws/nws/css) aren't additive across rows — callers
+    # pass true distinct totals to replace the double-counting column sums
+    totals.update(totals_override or {})
     fcells = [f"<td>{escape(foot_label)}</td>"]
     for _g, _css, cols in groups:
         for _h, fn, cls in cols:
@@ -435,7 +463,8 @@ def _row_attrs(key: str, clickable: bool, selected: str | None) -> str:
 
 def pivot_table_html(roll, dim_col: str, dim_label: str,
                      clickable: bool = False, selected: str | None = None,
-                     col_set: str = "TYPES", sparks: dict | None = None) -> str:
+                     col_set: str = "TYPES", sparks: dict | None = None,
+                     totals_override: dict | None = None) -> str:
     """3-type rollup table with per-row percentage bars and a TOTAL footer."""
     groups = _col_groups(col_set, three_stats=True)
 
@@ -451,7 +480,8 @@ def pivot_table_html(roll, dim_col: str, dim_label: str,
         return str(r[dim_col])
 
     return _table_html(groups, dim_label, roll, name_cell, row_attrs, spark_key,
-                       sparks, "TOTAL", "No rows match your filter.")
+                       sparks, "TOTAL", "No rows match your filter.",
+                       totals_override=totals_override)
 
 
 def subject_table_html(subs, show_brand_sublabel: bool = False,
@@ -479,8 +509,8 @@ def subject_table_html(subs, show_brand_sublabel: bool = False,
 
 def item_table_html(items) -> str:
     """Item × status grain detail table (one row per item and status)."""
-    headers = ["ITEM #", "TEAM", "FORM TYPE", "USED STATUS", "STATUS", "PROGRAM",
-               "AGE", "QTY", "UNIT COST", "VALUATION"]
+    headers = ["ITEM #", "DESCRIPTION", "TEAM", "FORM TYPE", "USED STATUS",
+               "STATUS", "PROGRAM", "AGE", "QTY", "UNIT COST", "VALUATION"]
     ncols = len(headers)
     head = "<tr>" + "".join(
         f'<th class="th-total">{h}</th>' if h == "VALUATION" else f"<th>{h}</th>"
@@ -488,13 +518,16 @@ def item_table_html(items) -> str:
     ) + "</tr>"
     rows = []
     for _, r in items.iterrows():
-        age = r["age_months"]
-        age_txt = "—" if pd.isna(age) else f"{int(age)} mo"
+        age = r["age_days"]
+        age_txt = "—" if pd.isna(age) else f"{int(age)}d"
         scode = str(r["status"])
         slabel = STATUS_LABELS.get(scode, scode)
+        desc = r["item_description"]
+        desc_txt = "—" if pd.isna(desc) or not str(desc) else str(desc)
         rows.append(
             "<tr>"
             f'<td>{escape(str(r["item_number"]))}</td>'
+            f'<td class="td-desc" title="{escape(desc_txt)}">{escape(desc_txt)}</td>'
             f'<td style="text-align:left">{escape(str(r["team"]) or "—")}</td>'
             f'<td style="text-align:left">{escape(str(r["relic_form_type"]) or "—")}</td>'
             f'<td style="text-align:left">{escape(str(r["item_used_status"]) or "—")}</td>'

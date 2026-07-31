@@ -135,7 +135,7 @@ def _on_view_change():
 
 
 # ── top controls ────────────────────────────────────────────────────────────
-c1, c2, c3 = st.columns([1.1, 2.6, 1.4])
+c1, c2, c3, c4 = st.columns([1.1, 2.6, 1.4, 0.4])
 with c1:
     st.selectbox("As-of date", months, format_func=month_label, key="as_of")
 with c2:
@@ -143,6 +143,10 @@ with c2:
 with c3:
     st.segmented_control("Tab", ["INVENTORY", "TRENDS", "AGING"], key="tab",
                          on_change=_sticky, args=("tab",))
+with c4:
+    if st.button("↻ Refresh", help="Clear cached data and reload from Snowflake"):
+        st.cache_data.clear()
+        st.rerun()
 
 # Program view is slated-only (mirrors the HTML); _on_view_change forces ss.status="SLATED".
 # The AGING tab always spans all statuses, so the control is disabled there too.
@@ -152,6 +156,7 @@ st.segmented_control("Status", list(STATUS_OPTS), key="status",
                      disabled=program_view or aging_tab,
                      on_change=_sticky, args=("status",))
 status_code = "A" if aging_tab else STATUS_OPTS[ss.status]
+
 
 # ── load snapshot ─────────────────────────────────────────────────────────────
 raw = data.load_onhand(ss.as_of)
@@ -202,7 +207,10 @@ def render_inventory():
     dim = cfg["col"]
     src = flt[flt["program"].notna()] if program_view else flt
     roll = tx.rollup(src, dim)
+    folded_vals: list[str] = []
     if ss.view == "BY FORM TYPE":
+        folded_vals = roll.loc[roll["tv"] < tx.FT_OTHER_THRESHOLD,
+                               dim].astype(str).tolist()
         roll = tx.collapse_other(roll, dim)
     if ss.view == "BY AGE":
         # age_bucket is an ordered categorical: sort by bucket, keep empty
@@ -250,10 +258,19 @@ def render_inventory():
     if current != "—" and current not in options:
         options.append(current)  # search can hide the selected row; keep the selectbox valid
 
+    # the footer's SUBJ columns are distinct counts, so they can't be summed
+    # down the column: recount over the source rows behind the visible rows
+    vis = set(roll[dim].astype(str))
+    keep = {v for v in vis if not v.startswith("OTHER (")}
+    if vis - keep:  # the collapsed OTHER row is visible: include what it folds
+        keep |= set(folded_vals)
+    subj_totals = tx.subject_count_totals(src[src[dim].astype(str).isin(keep)])
+
     clicked = interactive.table(
         style.pivot_table_html(roll, dim, cfg["label"], clickable=True,
                                selected=None if current == "—" else current,
-                               col_set=ss.pivot_cols, sparks=sparks),
+                               col_set=ss.pivot_cols, sparks=sparks,
+                               totals_override=subj_totals),
         key="pivot_tbl", max_height=_cap_px(ss.pivot_rows),
     )
     if clicked is not None and (clicked == current or clicked in options):
@@ -278,8 +295,12 @@ def render_inventory():
         st.segmented_control("Subject drill", ["ITEMS", "BY PROGRAM"], key="drill_mode",
                              on_change=_sticky, args=("drill_mode",))
 
+    # union count + per-type counts (subjects with items in several types are in
+    # each type's count but once in the union, so the parts can exceed the total)
     st.markdown(f"#### {sel} &nbsp; <span style='color:#6b7fa3;font-size:14px'>"
-                f"{len(subs)} subjects</span>", unsafe_allow_html=True)
+                f"{len(subs)} subjects · {int(subs['ws'].sum())} whole / "
+                f"{int(subs['nws'].sum())} non-whole / "
+                f"{int(subs['css'].sum())} cut sig</span>", unsafe_allow_html=True)
     sc1, sc2 = st.columns([4, 1])
     sq = sc1.text_input("Filter subjects", key="subj_search",
                         placeholder="Filter subjects…", label_visibility="collapsed")
@@ -320,15 +341,20 @@ def render_inventory():
     if status_code == "S" and ss.drill_mode == "BY PROGRAM":
         # nested program table keeps the legacy TYPES layout (rows are slated-only,
         # so STATUS/AGE columns would be redundant there)
-        prog = tx.program_breakdown(flt, brand_v, subj_v)
+        prog = tx.program_breakdown(sub_src, brand_v, subj_v)
+        prog_src = sub_src[(sub_src["brand"] == brand_v)
+                           & (sub_src["subject_name"] == subj_v)
+                           & (sub_src["status"] == "S")]
         pc1, pc2 = st.columns([4, 1])
         pc1.markdown(f"#### {subj_v} — by program")
         _rows_select(pc2, "prog_rows")
-        interactive.table(style.pivot_table_html(prog, "program", "PROGRAM"),
+        interactive.table(style.pivot_table_html(
+                              prog, "program", "PROGRAM",
+                              totals_override=tx.subject_count_totals(prog_src)),
                           key="prog_tbl", scroll=scroll_items,
                           max_height=_cap_px(ss.prog_rows))
     else:
-        items = tx.items_for(flt, brand_v, subj_v)
+        items = tx.items_for(sub_src, brand_v, subj_v)
         i1, i2, i3 = st.columns([3, 0.8, 1])
         n_items = items["item_number"].nunique()
         i1.markdown(f"#### {subj_v} &nbsp; <span style='color:#6b7fa3;font-size:14px'>"
@@ -341,15 +367,16 @@ def render_inventory():
         export_df = (
             items.assign(subject=subj_v, brand=brand_v,
                          status=items["status"].map(tx.STATUS_LABELS))
-            [["item_number", "subject", "brand", "team", "relic_form_type",
-              "item_used_status", "qty_onhand", "valuation", "status",
-              "program", "age_months"]]
+            [["item_number", "item_description", "subject", "brand", "team",
+              "relic_form_type", "item_used_status", "qty_onhand", "valuation",
+              "status", "program", "age_days"]]
             .rename(columns={
-                "item_number": "Item #", "subject": "Subject", "brand": "Brand",
+                "item_number": "Item #", "item_description": "Description",
+                "subject": "Subject", "brand": "Brand",
                 "team": "Team", "relic_form_type": "Form Type",
                 "item_used_status": "Used Status", "qty_onhand": "Qty On Hand",
                 "valuation": "Valuation (USD)", "status": "Status",
-                "program": "Program", "age_months": "Age (months)"})
+                "program": "Program", "age_days": "Age (days)"})
         )
         i3.download_button("⬇ Export XLS", to_excel(export_df),
                            file_name=f"relic_items_{brand_v}_{subj_v}.xlsx",
@@ -470,8 +497,11 @@ def render_aging():
     df = tx.apply_filters(raw, status="A", team=g_team, formtype=g_ft,
                           usedstatus=g_us, brand=g_brand)
     st.caption("Aging spans all statuses; the stale report has its own status filter. "
-               "Age basis: earliest procurement month (true receipt date pending) — "
-               "the oldest bucket includes pre-window inventory.")
+               "Age basis: earliest true RECEIPT_DATE from FCT_INVENTORY_AGING, which "
+               "also defines the on-hand universe for the whole dashboard — items it "
+               "doesn't carry are excluded everywhere. Ages are LOWER BOUNDS: the "
+               "aging window opens 2025-05-30, so anything received earlier reports "
+               "that date, and a receipt later in the as-of month counts as 0 days.")
     st.html(style.open_fct() + style.aging_cards_html(tx.aging_stats(df)) + style.close_fct())
 
     st.html(style.open_fct() + '<div class="sec-title">AGE PROFILE — VALUE BY BUCKET AND STATUS</div>' + style.close_fct())
@@ -484,11 +514,11 @@ def render_aging():
 
     st.html(style.open_fct() + '<div class="sec-title">STALE INVENTORY REPORT</div>' + style.close_fct())
     r1, r2, r3 = st.columns([2, 1.6, 0.9])
-    thr = r1.slider("Stale threshold (months)", 3, 15, value=12, key="stale_months")
+    thr = r1.slider("Stale threshold (days)", 90, 730, value=365, key="stale_days")
     r2.segmented_control("Report status", ["UNSLATED", "SLATED", "OBSOLETE", "ALL"],
                          key="stale_status", on_change=_sticky, args=("stale_status",))
     _rows_select(r3, "stale_rows")
-    st.caption("Defaults (12 mo / unslated) are placeholders — the stale rule is "
+    st.caption("Defaults (365 days / unslated) are placeholders — the stale rule is "
                "TBD with the business and may differ by case.")
     sel = ss.stale_status
     statuses = {"U", "S", "O"} if sel == "ALL" else {_STATUS_CODES[sel]}
@@ -498,13 +528,13 @@ def render_aging():
                 "item_number": "Item #", "brand": "Brand", "subject_name": "Subject",
                 "team": "Team", "relic_form_type": "Form Type",
                 "item_used_status": "Used Status", "status": "Status",
-                "program": "Program", "age_months": "Age (mo)",
+                "program": "Program", "age_days": "Age (days)",
                 "qty_onhand": "Qty", "valuation": "Valuation (USD)"}))
     st.dataframe(
         disp, hide_index=True, width="stretch",
         height=_df_height(ss.stale_rows, len(disp)),
         column_config={
-            "Age (mo)": st.column_config.NumberColumn(format="%d"),
+            "Age (days)": st.column_config.NumberColumn(format="%d"),
             "Qty": st.column_config.NumberColumn(format="%.0f"),
             "Valuation (USD)": st.column_config.NumberColumn(format="$%.0f"),
         },
