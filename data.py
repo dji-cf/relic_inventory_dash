@@ -144,6 +144,11 @@ def load_onhand(as_of: str) -> tuple[pd.DataFrame, datetime]:
     df.columns = [c.lower() for c in df.columns]
     df["qty_onhand"] = pd.to_numeric(df["qty_onhand"], errors="coerce").fillna(0.0)
     df["valuation"] = pd.to_numeric(df["valuation"], errors="coerce").fillna(0.0)
+    # Sub-inventory code + bin location (LOCATOR_NAME) are surfaced in the item
+    # grid and drive the sub-inventory filter / bin search; blank them so display
+    # and substring search never see a NaN.
+    for _c in ("subinventory_code", "bin_location"):
+        df[_c] = df[_c].fillna("").astype(str).str.strip()
     # Composite subject key (a subject can appear under multiple brands).
     df["subj_key"] = df["brand"] + " ||| " + df["subject_name"]
     # Aging: age_days is now guaranteed non-NULL and >= 0 — queries.ITEM_AGE_CTE is

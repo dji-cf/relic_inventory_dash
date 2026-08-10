@@ -584,9 +584,10 @@ def subject_table_html(subs, show_brand_sublabel: bool = False,
 
 
 def item_table_html(items) -> str:
-    """Item × status grain detail table (one row per item and status)."""
+    """Item × status × sub-inventory × bin grain detail table (one row per bin)."""
     headers = ["ITEM #", "DESCRIPTION", "TEAM", "FORM TYPE", "USED STATUS",
-               "STATUS", "PROGRAM", "AGE", "QTY", "UNIT COST", "VALUATION"]
+               "STATUS", "SUB-INV", "BIN", "PROGRAM", "AGE", "QTY", "UNIT COST",
+               "VALUATION"]
     ncols = len(headers)
     head = "<tr>" + "".join(
         f'<th class="th-total">{h}</th>' if h == "VALUATION" else f"<th>{h}</th>"
@@ -600,6 +601,10 @@ def item_table_html(items) -> str:
         slabel = STATUS_LABELS.get(scode, scode)
         desc = r["item_description"]
         desc_txt = "—" if pd.isna(desc) or not str(desc) else str(desc)
+        subinv = r["subinventory_code"]
+        subinv_txt = "—" if pd.isna(subinv) or not str(subinv).strip() else str(subinv)
+        binloc = r["bin_location"]
+        bin_txt = "—" if pd.isna(binloc) or not str(binloc).strip() else str(binloc)
         rows.append(
             "<tr>"
             f'<td>{escape(str(r["item_number"]))}</td>'
@@ -608,6 +613,8 @@ def item_table_html(items) -> str:
             f'<td style="text-align:left">{escape(str(r["relic_form_type"]) or "—")}</td>'
             f'<td style="text-align:left">{escape(str(r["item_used_status"]) or "—")}</td>'
             f'<td style="text-align:left"><span class="st st-{escape(scode)}">{slabel}</span></td>'
+            f'<td style="text-align:left">{escape(subinv_txt)}</td>'
+            f'<td class="td-desc" title="{escape(bin_txt)}">{escape(bin_txt)}</td>'
             f'<td style="text-align:left">{escape(str(r["program"]))}</td>'
             f"<td>{age_txt}</td>"
             f'<td>{fmtq(r["qty_onhand"])}</td>'

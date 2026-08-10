@@ -144,6 +144,7 @@ SELECT
     UPPER(COALESCE(NULLIF(TRIM(b.RELIC_FORM_TYPE), ''), 'OTHER')) AS relic_form_type,
     UPPER(COALESCE(NULLIF(TRIM(b.ITEM_USED_STATUS), ''), ''))       AS item_used_status,
     b.SUBINVENTORY_CODE,
+    TRIM(b.LOCATOR_NAME)                                            AS bin_location,
     b.qty_onhand,
     COALESCE(v.ITEM_INV_VALU, 0) * (b.qty_onhand / iq.item_qty)     AS valuation,
     CASE

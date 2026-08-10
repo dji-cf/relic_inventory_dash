@@ -39,6 +39,7 @@ VIEWS = {
 }
 STATUS_OPTS = {"ALL": "A", "UNSLATED": "U", "SLATED": "S", "OBSOLETE": "O"}
 COL_SETS = ["STANDARD", "+AGE", "STATUS + AGE"]
+SORT_OPTS = ["VALUE", "A-Z"]  # table sort: value-descending (default) or alphabetical
 TREND_DIMS = {"BRAND": "brand", "SUBJECT": "subj_key",
               "FORM TYPE": "relic_form_type", "STATUS": "status"}
 _STATUS_CODES = {v: k for k, v in tx.STATUS_LABELS.items()}
@@ -70,10 +71,11 @@ ss.setdefault("view", "BY BRAND / SPORT")
 ss.setdefault("tab", "INVENTORY")
 ss.setdefault("drill_mode", "ITEMS")
 ss.setdefault("pivot_cols", "STANDARD")
+ss.setdefault("sort_mode", "VALUE")
 ss.setdefault("trend_dim", "BRAND")
 ss.setdefault("trend_metric", "VALUE")
 ss.setdefault("stale_status", "UNSLATED")
-for _k in ("status", "view", "tab", "drill_mode", "pivot_cols",
+for _k in ("status", "view", "tab", "drill_mode", "pivot_cols", "sort_mode",
            "trend_dim", "trend_metric", "stale_status"):  # remember last good selection
     ss.setdefault(f"_{_k}_last", ss[_k])
 for _k in ("pivot_rows", "subj_rows", "prog_rows", "item_rows",
@@ -163,21 +165,26 @@ raw, pulled_at = data.load_onhand(ss.as_of)
 
 # ── global filters ────────────────────────────────────────────────────────────
 with st.expander("Filters", expanded=False):
-    f1, f2, f3, f4 = st.columns(4)
+    f1, f2, f3, f4, f5 = st.columns(5)
     teams = [""] + sorted(t for t in raw["team"].dropna().unique() if t)
     fts = [""] + sorted(f for f in raw["relic_form_type"].dropna().unique() if f)
     uss = [""] + sorted(u for u in raw["item_used_status"].dropna().unique() if u)
     brands = [""] + sorted(b for b in raw["brand"].dropna().unique() if b)
-    for _k, _opts in (("g_team", teams), ("g_ft", fts), ("g_us", uss), ("g_brand", brands)):
+    subinvs = [""] + sorted(s for s in raw["subinventory_code"].dropna().unique() if s)
+    for _k, _opts in (("g_team", teams), ("g_ft", fts), ("g_us", uss),
+                      ("g_brand", brands), ("g_subinv", subinvs)):
         if ss.get(_k) not in _opts:  # drop a selection that no longer exists this month
             ss[_k] = ""
     g_team = f1.selectbox("Team", teams, format_func=lambda x: x or "All Teams", key="g_team")
     g_ft = f2.selectbox("Form Type", fts, format_func=lambda x: x or "All Form Types", key="g_ft")
     g_us = f3.selectbox("Used Status", uss, format_func=lambda x: x or "All Used Status", key="g_us")
     g_brand = f4.selectbox("Brand", brands, format_func=lambda x: x or "All Brands", key="g_brand")
+    g_subinv = f5.selectbox("Sub-Inventory", subinvs,
+                            format_func=lambda x: x or "All Sub-Inventories", key="g_subinv")
 
 flt = tx.apply_filters(raw, status=status_code, team=g_team,
-                       formtype=g_ft, usedstatus=g_us, brand=g_brand)
+                       formtype=g_ft, usedstatus=g_us, brand=g_brand,
+                       subinventory=g_subinv)
 
 cards = tx.stat_cards(flt)
 cfg = VIEWS[ss.view]
@@ -217,22 +224,35 @@ def render_inventory():
         # buckets visible as zero rows so the age profile is complete
         roll = roll.sort_values(dim).reset_index(drop=True)
 
-    # search + column set + sparkline toggle + export + rows-per-view
-    s1, s2, s3, s4, s5 = st.columns([1.8, 1.4, 0.75, 0.75, 0.9])
+    # search + column set + sort + sparkline toggle + export + rows-per-view
+    s1, s2, s3, s4, s5, s6 = st.columns([1.7, 1.3, 1.0, 0.7, 0.75, 0.85])
     q = s1.text_input("Filter " + cfg["label"].lower(), key="pivot_search",
                       placeholder=f"Filter {cfg['label'].lower()}…",
                       label_visibility="collapsed")
     s2.segmented_control("Columns", COL_SETS, key="pivot_cols",
                          on_change=_sticky, args=("pivot_cols",),
                          label_visibility="collapsed")
-    s3.toggle("15-MO TREND", key="show_sparks")
+    s3.segmented_control("Sort", SORT_OPTS, key="sort_mode",
+                         on_change=_sticky, args=("sort_mode",),
+                         label_visibility="collapsed",
+                         help="Sort tables by value (default) or alphabetically")
+    s4.toggle("15-MO TREND", key="show_sparks")
+    # A-Z sort applies to the pivot (except the ordered AGE view), the subject
+    # drill, and the item detail table. A collapsed OTHER row is kept last.
+    alpha = ss.get("sort_mode") == "A-Z"
+    if alpha and ss.view != "BY AGE":
+        _key = roll[dim].astype(str)
+        roll = (roll.assign(_o=_key.str.startswith("OTHER (").to_numpy(),
+                            _s=_key.str.lower().to_numpy())
+                .sort_values(["_o", "_s"], kind="stable")
+                .drop(columns=["_o", "_s"]).reset_index(drop=True))
     if q:
         roll = roll[roll[dim].astype(str).str.contains(q, case=False, na=False)]
-    s4.download_button("⬇ Export XLS", to_excel(roll),
+    s5.download_button("⬇ Export XLS", to_excel(roll),
                        file_name=f"relic_{dim}_{ss.as_of}.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                        width="stretch")
-    _rows_select(s5, "pivot_rows")
+    _rows_select(s6, "pivot_rows")
 
     # 15-month sparklines: lazy — history is loaded only when the toggle is on.
     # Window is clipped to months <= as-of so the last point matches the table.
@@ -246,7 +266,8 @@ def render_inventory():
         else:
             hist_flt = tx.apply_filters(_history_checked(), status=status_code,
                                         team=g_team, formtype=g_ft,
-                                        usedstatus=g_us, brand=g_brand)
+                                        usedstatus=g_us, brand=g_brand,
+                                        subinventory=g_subinv)
             if program_view:
                 hist_flt = hist_flt[hist_flt["program"].notna()]
             sparks = tx.sparks_for(hist_flt, dim, spark_months)
@@ -309,6 +330,10 @@ def render_inventory():
     if sq:
         subs_view = subs[subs["subject_name"].str.contains(sq, case=False, na=False)
                          | subs["brand"].str.contains(sq, case=False, na=False)]
+    if alpha:
+        subs_view = subs_view.sort_values(
+            "subject_name", key=lambda s: s.astype(str).str.lower(),
+            kind="stable").reset_index(drop=True)
 
     subj_sparks = None
     if hist_flt is not None:
@@ -360,21 +385,34 @@ def render_inventory():
         i1.markdown(f"#### {subj_v} &nbsp; <span style='color:#6b7fa3;font-size:14px'>"
                     f"{n_items} items · {len(items)} rows</span>", unsafe_allow_html=True)
         iq = i1.text_input("Filter items", key="item_search",
-                           placeholder="Filter by item #…", label_visibility="collapsed")
+                           placeholder="Filter by item #, bin, or sub-inv…",
+                           label_visibility="collapsed")
         _rows_select(i2, "item_rows")
         if iq:
-            items = items[items["item_number"].str.contains(iq, case=False, na=False)]
+            items = items[
+                items["item_number"].str.contains(iq, case=False, na=False)
+                | items["bin_location"].astype(str).str.contains(iq, case=False, na=False)
+                | items["subinventory_code"].astype(str).str.contains(iq, case=False, na=False)
+            ]
+        if alpha:
+            items = items.sort_values(
+                ["item_number", "subinventory_code", "bin_location"],
+                key=lambda s: s.astype(str).str.lower(),
+                kind="stable").reset_index(drop=True)
         export_df = (
             items.assign(subject=subj_v, brand=brand_v,
                          status=items["status"].map(tx.STATUS_LABELS))
             [["item_number", "item_description", "subject", "brand", "team",
-              "relic_form_type", "item_used_status", "qty_onhand", "valuation",
+              "relic_form_type", "item_used_status", "subinventory_code",
+              "bin_location", "qty_onhand", "valuation",
               "status", "program", "age_days"]]
             .rename(columns={
                 "item_number": "Item #", "item_description": "Description",
                 "subject": "Subject", "brand": "Brand",
                 "team": "Team", "relic_form_type": "Form Type",
-                "item_used_status": "Used Status", "qty_onhand": "Qty On Hand",
+                "item_used_status": "Used Status",
+                "subinventory_code": "Sub-Inventory", "bin_location": "Bin Location",
+                "qty_onhand": "Qty On Hand",
                 "valuation": "Valuation (USD)", "status": "Status",
                 "program": "Program", "age_days": "Age (days)"})
         )
@@ -405,7 +443,8 @@ def render_trends():
     status_dim = dim == "status"
     eff_status = "A" if status_dim else status_code
     hist = tx.apply_filters(hist_all, status=eff_status, team=g_team,
-                            formtype=g_ft, usedstatus=g_us, brand=g_brand)
+                            formtype=g_ft, usedstatus=g_us, brand=g_brand,
+                            subinventory=g_subinv)
     if status_dim and status_code != "A":
         st.caption("Status filter is ignored for the STATUS dimension.")
 
@@ -495,7 +534,7 @@ def render_aging():
     # aging always spans all statuses — the global Status control is disabled on
     # this tab (the stale report below has its own status filter)
     df = tx.apply_filters(raw, status="A", team=g_team, formtype=g_ft,
-                          usedstatus=g_us, brand=g_brand)
+                          usedstatus=g_us, brand=g_brand, subinventory=g_subinv)
     st.caption("Aging spans all statuses; the stale report has its own status filter. "
                "Age basis: earliest true RECEIPT_DATE from FCT_INVENTORY_AGING, which "
                "also defines the on-hand universe for the whole dashboard — items it "

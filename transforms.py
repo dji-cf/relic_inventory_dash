@@ -77,7 +77,8 @@ def fmtq(n) -> str:
 
 
 # ── filtering ───────────────────────────────────────────────────────────────
-def apply_filters(df, status="A", team="", formtype="", usedstatus="", brand=""):
+def apply_filters(df, status="A", team="", formtype="", usedstatus="", brand="",
+                  subinventory=""):
     out = df
     if status != "A":
         out = out[out["status"] == status]
@@ -89,6 +90,8 @@ def apply_filters(df, status="A", team="", formtype="", usedstatus="", brand="")
         out = out[out["item_used_status"] == usedstatus]
     if brand:
         out = out[out["brand"] == brand]
+    if subinventory:
+        out = out[out["subinventory_code"] == subinventory]
     return out
 
 
@@ -243,21 +246,23 @@ def _join_programs(s: pd.Series) -> str:
 
 
 def items_for(df, brand, subject) -> pd.DataFrame:
-    """Item × status grain detail for a brand+subject.
+    """Item × status × sub-inventory × bin grain detail for a brand+subject.
 
-    One row per (item, status): a part-slated item shows its unslated and slated
-    qty/value as separate rows so a picklist export states exactly how much is
-    available vs. committed. Rows for one item stay adjacent (sorted by the
-    item's total value, then item, then status).
+    One row per (item, status, sub-inventory, bin/locator): an item held in more
+    than one bin — or part-slated across sub-inventories — shows each location as
+    its own row so a picklist export states exactly where each unit sits and how
+    much is available vs. committed. Rows for one item stay adjacent (sorted by
+    the item's total value, then item, then status, sub-inventory, bin).
     """
     g = df[(df["brand"] == brand) & (df["subject_name"] == subject)]
     cols = ["item_number", "item_description", "team", "relic_form_type",
-            "item_used_status", "status", "program", "age_days", "qty_onhand",
-            "unit_cost", "valuation"]
+            "item_used_status", "status", "subinventory_code", "bin_location",
+            "program", "age_days", "qty_onhand", "unit_cost", "valuation"]
     if g.empty:
         return pd.DataFrame(columns=cols)
     out = (
-        g.groupby(["item_number", "status"], dropna=False, observed=False)
+        g.groupby(["item_number", "status", "subinventory_code", "bin_location"],
+                  dropna=False, observed=False)
         .agg(
             item_description=("item_description", "first"),
             team=("team", "first"),
@@ -274,8 +279,9 @@ def items_for(df, brand, subject) -> pd.DataFrame:
                                 out["valuation"] / out["qty_onhand"], 0.0)
     item_tv = out.groupby("item_number")["valuation"].transform("sum")
     out = (out.assign(_itv=item_tv)
-           .sort_values(["_itv", "item_number", "status"],
-                        ascending=[False, True, True])
+           .sort_values(["_itv", "item_number", "status", "subinventory_code",
+                         "bin_location"],
+                        ascending=[False, True, True, True, True])
            .drop(columns="_itv")
            .reset_index(drop=True))
     return out[cols]
