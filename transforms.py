@@ -95,6 +95,103 @@ def apply_filters(df, status="A", team="", formtype="", usedstatus="", brand="",
     return out
 
 
+# ── column sorting (click-to-sort headers) ───────────────────────────────────
+# Sorting runs HERE, on the real frame values — never on the rendered cell text.
+# The tables display formatted strings ("$1,234", "120d", "45%", "—"), so sorting
+# those in the browser would order text and silently mis-rank numbers.
+#
+# A sort key is either a frame column name or one of these derived ratios, which
+# are computed from the additive EXT_COLS rather than stored (see the module
+# docstring). Ratio denominators of 0 yield NaN, which always sorts last.
+SORT_AVG_AGE = "@avg_age"    # agev / av
+SORT_PCT12 = "@pct12"        # v12 / tv
+SORT_TREND = "@trend"        # sparkline % change (needs the sparks dict)
+
+_OTHER_PREFIX = "OTHER ("
+
+
+def _ratio(num: pd.Series, den: pd.Series) -> pd.Series:
+    """num/den as float with 0 (and NaN) denominators becoming NaN."""
+    d = pd.to_numeric(den, errors="coerce").astype("float64")
+    n = pd.to_numeric(num, errors="coerce").astype("float64")
+    return n / d.where(d != 0)
+
+
+def sort_series(df, key, *, sparks=None, spark_key=None):
+    """Resolve a sort key to the Series the frame should be ordered by.
+
+    Returns None when the key can't be resolved against this frame — callers
+    treat that as "sort no longer applies" and fall back to the default order.
+    """
+    if key == SORT_AVG_AGE:
+        if {"agev", "av"} <= set(df.columns):
+            return _ratio(df["agev"], df["av"])
+        return None
+    if key == SORT_PCT12:
+        if {"v12", "tv"} <= set(df.columns):
+            return _ratio(df["v12"], df["tv"])
+        return None
+    if key == SORT_TREND:
+        # sparks maps a row's spark key -> (values, pct); pct is None for "NEW".
+        if not sparks or spark_key is None:
+            return None
+        pct = [(sparks.get(spark_key(r)) or (None, None))[1] for _, r in df.iterrows()]
+        return pd.Series(pct, index=df.index, dtype="float64")
+    if key in df.columns:
+        return df[key]
+    return None
+
+
+def default_descending(s: pd.Series) -> bool:
+    """True when a column should sort largest-first on its FIRST click.
+
+    Numbers read best biggest-first (a $ or QTY column), text reads best A-Z.
+    Categorical dtypes hold strings here (see data.load_history), so they count
+    as text even though pandas may store integer codes.
+    """
+    if isinstance(s.dtype, pd.CategoricalDtype):
+        return False
+    return bool(pd.api.types.is_numeric_dtype(s))
+
+
+def sort_frame(df, spec, *, sparks=None, spark_key=None, pin_other_col=None):
+    """Order ``df`` by ``spec`` = ``(key, "asc"|"desc")``; no-op when spec is None.
+
+    * text sorts case-insensitively, so "adidas" and "Adidas" interleave sanely
+    * NaN / missing always sorts LAST, in both directions — an em-dash row is
+      never the "top" result
+    * stable, so rows tied on the sorted column keep the frame's incoming order
+      (which is the default value ranking)
+    * ``pin_other_col``: name of the dim column whose collapsed "OTHER (n …)"
+      bucket must stay pinned at the bottom. It is an aggregate of folded rows,
+      not a real member, so letting it sort among real values would mislead.
+    """
+    if df.empty or not spec:
+        return df
+    key, direction = spec
+    s = sort_series(df, key, sparks=sparks, spark_key=spark_key)
+    if s is None:
+        return df
+    asc = direction != "desc"
+    if isinstance(s.dtype, pd.CategoricalDtype) or not pd.api.types.is_numeric_dtype(s):
+        # str(NaN) == "nan", which would sort among real values — mask the blanks
+        # back to NaN (taken from the resolved series, not the frame) so
+        # na_position still sinks them in BOTH directions.
+        na = s.isna()
+        s = s.astype(str).str.lower().mask(na)
+    order = pd.DataFrame({"_s": s.to_numpy()}, index=df.index)
+    by = ["_s"]
+    ascending = [asc]
+    if pin_other_col and pin_other_col in df.columns:
+        order["_o"] = (df[pin_other_col].astype(str)
+                       .str.startswith(_OTHER_PREFIX).to_numpy())
+        by = ["_o"] + by
+        ascending = [True] + ascending
+    order = order.sort_values(by, ascending=ascending, kind="stable",
+                              na_position="last")
+    return df.loc[order.index]
+
+
 # ── rollups ─────────────────────────────────────────────────────────────────
 def _typed_value_cols(df):
     g = df.copy()

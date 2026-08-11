@@ -21,7 +21,8 @@ from html import escape
 import pandas as pd
 import streamlit as st
 
-from transforms import EXT_COLS, ROLLUP_COLS, STATUS_LABELS, fmt, fmt2, fmtq
+from transforms import (EXT_COLS, ROLLUP_COLS, SORT_AVG_AGE, SORT_PCT12,
+                        SORT_TREND, STATUS_LABELS, fmt, fmt2, fmtq)
 
 # Freshness tooltips read best in the reader's own wall-clock time. The zone is
 # PINNED rather than taken from the host clock: the SiS container runs in UTC, so
@@ -179,6 +180,16 @@ TABLE_CSS = _BASE_CSS + """
 .fct .st-U { color:var(--whole); }
 .fct .st-S { color:var(--nonwhole); }
 .fct .st-O { color:var(--cutsig); }
+
+/* CLICK-TO-SORT HEADERS: only cells carrying data-sort are interactive, and
+   data-sort is emitted exclusively inside <thead> so header clicks can never be
+   confused with the tbody row clicks that drive drill-down. The sort itself runs
+   in pandas (see transforms.sort_frame) — these are just the affordances. */
+.fct thead th[data-sort] { cursor:pointer; user-select:none; }
+.fct thead th[data-sort]:hover { background:#2b4470; }
+.fct thead th:first-child[data-sort]:hover { background:#222; }
+.fct thead th.th-total[data-sort]:hover { background:#c9923a; }
+.fct .sort-arw { font-size:9px; margin-left:3px; opacity:.95; }
 
 /* PERCENTAGE BAR */
 .fct .bar { display:flex; gap:2px; height:4px; border-radius:3px; overflow:hidden;
@@ -425,9 +436,11 @@ def _trend_cell(entry) -> str:
 
 
 # ── column-spec table machinery ───────────────────────────────────────────────
-# A column group is (group_label, header_css, [(col_header, cell_fn, td_css)]).
-# cell_fn(d) formats a cell from either a row Series or the footer totals dict,
-# so footer ratios (avg age, %>1yr) derive from the summed additive columns.
+# A column group is (group_label, header_css, [(col_header, cell_fn, td_css,
+# sort_key)]). cell_fn(d) formats a cell from either a row Series or the footer
+# totals dict, so footer ratios (avg age, %>1yr) derive from the summed additive
+# columns. sort_key names the FRAME field (or derived ratio) the column sorts by
+# — never the formatted text; None makes the column unsortable.
 _SUMMABLE = set(ROLLUP_COLS + EXT_COLS)
 
 
@@ -443,10 +456,10 @@ def _fmt_pct12(d) -> str:
 
 def _type_groups(three_stats: bool):
     def cols(p, cls):
-        out = [("QTY", lambda d, k=f"{p}q": fmtq(d[k]), cls)]
+        out = [("QTY", lambda d, k=f"{p}q": fmtq(d[k]), cls, f"{p}q")]
         if three_stats:
-            out.append(("SUBJ", lambda d, k=f"{p}s": fmtq(d[k]), cls))
-        out.append(("VALUE", lambda d, k=f"{p}v": fmt(d[k]), cls))
+            out.append(("SUBJ", lambda d, k=f"{p}s": fmtq(d[k]), cls, f"{p}s"))
+        out.append(("VALUE", lambda d, k=f"{p}v": fmt(d[k]), cls, f"{p}v"))
         return out
 
     return [
@@ -456,15 +469,28 @@ def _type_groups(three_stats: bool):
     ]
 
 
-_TOTAL_GROUP = ("", "th-total", [("TOTAL VALUE", lambda d: fmt(d["tv"]), "td-total")])
+_TOTAL_GROUP = ("", "th-total", [("TOTAL VALUE", lambda d: fmt(d["tv"]), "td-total", "tv")])
 _STATUS_GROUP = ("◆ STATUS", "th-status", [
-    ("SLATED", lambda d: fmt(d["slv"]), "td-slated"),
-    ("UNSLATED", lambda d: fmt(d["uslv"]), "td-unslated"),
+    ("SLATED", lambda d: fmt(d["slv"]), "td-slated", "slv"),
+    ("UNSLATED", lambda d: fmt(d["uslv"]), "td-unslated", "uslv"),
 ])
 _AGE_GROUP = ("◆ AGE", "th-age", [
-    ("AVG AGE", _fmt_avg_age, "td-age"),
-    ("%>1yr VAL", _fmt_pct12, "td-age"),
+    ("AVG AGE", _fmt_avg_age, "td-age", SORT_AVG_AGE),
+    ("%>1yr VAL", _fmt_pct12, "td-age", SORT_PCT12),
 ])
+
+
+def _th(header: str, css: str, sort_key: str | None, sort) -> str:
+    """One <th>. Adds data-sort + an active-direction arrow when sortable."""
+    cls = f' class="{css}"' if css else ""
+    if not sort_key:
+        return f"<th{cls}>{escape(header)}</th>"
+    arrow = ""
+    if sort and sort[0] == sort_key:
+        glyph = "▼" if sort[1] == "desc" else "▲"
+        arrow = f'<span class="sort-arw">{glyph}</span>'
+    return (f'<th{cls} data-sort="{escape(sort_key)}"'
+            f' title="Sort by {escape(header)}">{escape(header)}{arrow}</th>')
 
 
 def _col_groups(col_set: str, three_stats: bool):
@@ -483,18 +509,25 @@ def _col_groups(col_set: str, three_stats: bool):
 
 def _table_html(groups, first_header, frame, name_cell, row_attrs, spark_key,
                 sparks, foot_label, empty_msg,
-                totals_override: dict | None = None) -> str:
-    """Shared builder for the pivot + subject drill tables."""
+                totals_override: dict | None = None,
+                sort=None, first_sort: str | None = None) -> str:
+    """Shared builder for the pivot + subject drill tables.
+
+    ``sort`` is the active ``(key, direction)`` — used only to draw the arrow;
+    the row order must already have been applied by transforms.sort_frame.
+    ``first_sort`` is the sort key for the leading name column.
+    """
     has_trend = sparks is not None
     ghead = ['<tr class="cg"><th></th>']
-    chead = [f"<tr><th>{escape(first_header)}</th>"]
+    # Only this second header row is clickable: the .cg band row spans groups.
+    chead = ["<tr>" + _th(first_header, "", first_sort, sort)]
     for glabel, gcss, cols in groups:
         ghead.append(f'<th colspan="{len(cols)}" class="{gcss}">{glabel}</th>')
-        for h, _fn, _cls in cols:
-            chead.append(f'<th class="{gcss}">{h}</th>')
+        for h, _fn, _cls, skey in cols:
+            chead.append(_th(h, gcss, skey, sort))
     if has_trend:
         ghead.append('<th class="th-trend"></th>')
-        chead.append('<th class="th-trend">TREND · Δ</th>')
+        chead.append(_th("TREND · Δ", "th-trend", SORT_TREND, sort))
     ghead.append("</tr>")
     chead.append("</tr>")
 
@@ -503,7 +536,7 @@ def _table_html(groups, first_header, frame, name_cell, row_attrs, spark_key,
     for _, r in frame.iterrows():
         cells = [f"<td>{name_cell(r)}</td>"]
         for _g, _css, cols in groups:
-            for _h, fn, cls in cols:
+            for _h, fn, cls, _sk in cols:
                 cells.append(f'<td class="{cls}">{fn(r)}</td>')
         if has_trend:
             cells.append(f'<td class="td-trend">{_trend_cell(sparks.get(spark_key(r)))}</td>')
@@ -518,7 +551,7 @@ def _table_html(groups, first_header, frame, name_cell, row_attrs, spark_key,
     totals.update(totals_override or {})
     fcells = [f"<td>{escape(foot_label)}</td>"]
     for _g, _css, cols in groups:
-        for _h, fn, cls in cols:
+        for _h, fn, cls, _sk in cols:
             fcells.append(f'<td class="{cls}">{fn(totals)}</td>')
     if has_trend:
         fcells.append("<td></td>")
@@ -540,7 +573,8 @@ def _row_attrs(key: str, clickable: bool, selected: str | None) -> str:
 def pivot_table_html(roll, dim_col: str, dim_label: str,
                      clickable: bool = False, selected: str | None = None,
                      col_set: str = "TYPES", sparks: dict | None = None,
-                     totals_override: dict | None = None) -> str:
+                     totals_override: dict | None = None,
+                     sort=None) -> str:
     """3-type rollup table with per-row percentage bars and a TOTAL footer."""
     groups = _col_groups(col_set, three_stats=True)
 
@@ -557,12 +591,14 @@ def pivot_table_html(roll, dim_col: str, dim_label: str,
 
     return _table_html(groups, dim_label, roll, name_cell, row_attrs, spark_key,
                        sparks, "TOTAL", "No rows match your filter.",
-                       totals_override=totals_override)
+                       totals_override=totals_override,
+                       sort=sort, first_sort=dim_col)
 
 
 def subject_table_html(subs, show_brand_sublabel: bool = False,
                        clickable: bool = False, selected: str | None = None,
-                       col_set: str = "TYPES", sparks: dict | None = None) -> str:
+                       col_set: str = "TYPES", sparks: dict | None = None,
+                       sort=None) -> str:
     """Subject-level drill table (QTY/VALUE per type, no subject counts)."""
     groups = _col_groups(col_set, three_stats=False)
 
@@ -580,18 +616,36 @@ def subject_table_html(subs, show_brand_sublabel: bool = False,
         return str(r["subj_key"])
 
     return _table_html(groups, "SUBJECT", subs, name_cell, row_attrs, spark_key,
-                       sparks, "TOTAL (filtered)", "No subjects found.")
+                       sparks, "TOTAL (filtered)", "No subjects found.",
+                       sort=sort, first_sort="subject_name")
 
 
-def item_table_html(items) -> str:
+# (header, frame field) for the item detail table. The field is what the column
+# sorts by, so every column here is sortable on its real value — AGE sorts by
+# age_days (not "120d") and VALUATION by the float (not "$1,234").
+_ITEM_COLS = [
+    ("ITEM #", "item_number"),
+    ("DESCRIPTION", "item_description"),
+    ("TEAM", "team"),
+    ("FORM TYPE", "relic_form_type"),
+    ("USED STATUS", "item_used_status"),
+    ("STATUS", "status"),
+    ("SUB-INV", "subinventory_code"),
+    ("BIN", "bin_location"),
+    ("PROGRAM", "program"),
+    ("AGE", "age_days"),
+    ("QTY", "qty_onhand"),
+    ("UNIT COST", "unit_cost"),
+    ("VALUATION", "valuation"),
+]
+
+
+def item_table_html(items, sort=None) -> str:
     """Item × status × sub-inventory × bin grain detail table (one row per bin)."""
-    headers = ["ITEM #", "DESCRIPTION", "TEAM", "FORM TYPE", "USED STATUS",
-               "STATUS", "SUB-INV", "BIN", "PROGRAM", "AGE", "QTY", "UNIT COST",
-               "VALUATION"]
-    ncols = len(headers)
+    ncols = len(_ITEM_COLS)
     head = "<tr>" + "".join(
-        f'<th class="th-total">{h}</th>' if h == "VALUATION" else f"<th>{h}</th>"
-        for h in headers
+        _th(h, "th-total" if h == "VALUATION" else "", field, sort)
+        for h, field in _ITEM_COLS
     ) + "</tr>"
     rows = []
     for _, r in items.iterrows():

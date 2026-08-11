@@ -39,7 +39,6 @@ VIEWS = {
 }
 STATUS_OPTS = {"ALL": "A", "UNSLATED": "U", "SLATED": "S", "OBSOLETE": "O"}
 COL_SETS = ["STANDARD", "+AGE", "STATUS + AGE"]
-SORT_OPTS = ["VALUE", "A-Z"]  # table sort: value-descending (default) or alphabetical
 TREND_DIMS = {"BRAND": "brand", "SUBJECT": "subj_key",
               "FORM TYPE": "relic_form_type", "STATUS": "status"}
 _STATUS_CODES = {v: k for k, v in tx.STATUS_LABELS.items()}
@@ -71,16 +70,55 @@ ss.setdefault("view", "BY BRAND / SPORT")
 ss.setdefault("tab", "INVENTORY")
 ss.setdefault("drill_mode", "ITEMS")
 ss.setdefault("pivot_cols", "STANDARD")
-ss.setdefault("sort_mode", "VALUE")
 ss.setdefault("trend_dim", "BRAND")
 ss.setdefault("trend_metric", "VALUE")
 ss.setdefault("stale_status", "UNSLATED")
-for _k in ("status", "view", "tab", "drill_mode", "pivot_cols", "sort_mode",
+for _k in ("status", "view", "tab", "drill_mode", "pivot_cols",
            "trend_dim", "trend_metric", "stale_status"):  # remember last good selection
     ss.setdefault(f"_{_k}_last", ss[_k])
 for _k in ("pivot_rows", "subj_rows", "prog_rows", "item_rows",
            "movers_rows", "stale_rows"):  # per-table rows-per-view default
     ss.setdefault(_k, 25)
+# Click-to-sort state, one entry per custom table: None (default ranking) or
+# (sort_key, "asc"|"desc"). Set by header clicks; see _apply_sort.
+for _k in ("sort_pivot", "sort_subj", "sort_prog", "sort_item"):
+    ss.setdefault(_k, None)
+
+
+# ── click-to-sort ─────────────────────────────────────────────────────────────
+def _toggle_sort(state_key: str, clicked: str, frame, **resolve):
+    """Fold a header click into the table's sort state, then rerun.
+
+    Same column -> flip direction. New column -> start in the direction that
+    reads naturally for its type: numbers largest-first, text A-Z (resolved from
+    the real dtype, so a formatted $ column still sorts numerically).
+    """
+    cur = ss.get(state_key)
+    if cur and cur[0] == clicked:
+        ss[state_key] = (clicked, "asc" if cur[1] == "desc" else "desc")
+    else:
+        s = tx.sort_series(frame, clicked, **resolve)
+        if s is None:
+            return
+        ss[state_key] = (clicked, "desc" if tx.default_descending(s) else "asc")
+    st.rerun()
+
+
+def _apply_sort(state_key: str, frame, *, pin_other_col=None, **resolve):
+    """Sort ``frame`` by the table's state, dropping a stale/unresolvable key.
+
+    A sorted column can vanish between runs — switching View changes the pivot
+    dimension, the Columns control removes STATUS/AGE, and turning off 15-MO
+    TREND removes the trend column. In those cases clear the state so the table
+    falls back to its default ranking instead of silently ignoring the arrow.
+    """
+    spec = ss.get(state_key)
+    if not spec:
+        return frame
+    if tx.sort_series(frame, spec[0], **resolve) is None:
+        ss[state_key] = None
+        return frame
+    return tx.sort_frame(frame, spec, pin_other_col=pin_other_col, **resolve)
 
 
 # ── rows-per-view (per-table height cap + scroll) ─────────────────────────────
@@ -224,38 +262,21 @@ def render_inventory():
         # buckets visible as zero rows so the age profile is complete
         roll = roll.sort_values(dim).reset_index(drop=True)
 
-    # search + column set + sort + sparkline toggle + export + rows-per-view
-    s1, s2, s3, s4, s5, s6 = st.columns([1.7, 1.3, 1.0, 0.7, 0.75, 0.85])
+    # search + column set + sparkline toggle + export + rows-per-view
+    s1, s2, s3, s4, s5 = st.columns([1.8, 1.4, 0.75, 0.75, 0.9])
     q = s1.text_input("Filter " + cfg["label"].lower(), key="pivot_search",
                       placeholder=f"Filter {cfg['label'].lower()}…",
                       label_visibility="collapsed")
     s2.segmented_control("Columns", COL_SETS, key="pivot_cols",
                          on_change=_sticky, args=("pivot_cols",),
                          label_visibility="collapsed")
-    s3.segmented_control("Sort", SORT_OPTS, key="sort_mode",
-                         on_change=_sticky, args=("sort_mode",),
-                         label_visibility="collapsed",
-                         help="Sort tables by value (default) or alphabetically")
-    s4.toggle("15-MO TREND", key="show_sparks")
-    # A-Z sort applies to the pivot (except the ordered AGE view), the subject
-    # drill, and the item detail table. A collapsed OTHER row is kept last.
-    alpha = ss.get("sort_mode") == "A-Z"
-    if alpha and ss.view != "BY AGE":
-        _key = roll[dim].astype(str)
-        roll = (roll.assign(_o=_key.str.startswith("OTHER (").to_numpy(),
-                            _s=_key.str.lower().to_numpy())
-                .sort_values(["_o", "_s"], kind="stable")
-                .drop(columns=["_o", "_s"]).reset_index(drop=True))
+    s3.toggle("15-MO TREND", key="show_sparks")
     if q:
         roll = roll[roll[dim].astype(str).str.contains(q, case=False, na=False)]
-    s5.download_button("⬇ Export XLS", to_excel(roll),
-                       file_name=f"relic_{dim}_{ss.as_of}.xlsx",
-                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                       width="stretch")
-    _rows_select(s6, "pivot_rows")
 
     # 15-month sparklines: lazy — history is loaded only when the toggle is on.
     # Window is clipped to months <= as-of so the last point matches the table.
+    # Resolved BEFORE sorting because the TREND column sorts by its % change.
     hist_flt = None
     sparks = None
     spark_months = [m for m in months if m <= ss.as_of]
@@ -272,6 +293,18 @@ def render_inventory():
                 hist_flt = hist_flt[hist_flt["program"].notna()]
             sparks = tx.sparks_for(hist_flt, dim, spark_months)
 
+    # Click-to-sort. Applied before the export so the XLS matches the screen;
+    # the collapsed OTHER bucket stays pinned last whichever way we sort.
+    _pivot_spark_key = (lambda r: str(r[dim]))
+    roll = _apply_sort("sort_pivot", roll, pin_other_col=dim,
+                       sparks=sparks, spark_key=_pivot_spark_key)
+
+    s4.download_button("⬇ Export XLS", to_excel(roll),
+                       file_name=f"relic_{dim}_{ss.as_of}.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       width="stretch")
+    _rows_select(s5, "pivot_rows")
+
     # ── main pivot: click a row (or use the selectbox below) to drill ──
     options = ["—"] + [o for o in roll[dim].astype(str).tolist()
                        if not o.startswith("OTHER (")]
@@ -287,13 +320,18 @@ def render_inventory():
         keep |= set(folded_vals)
     subj_totals = tx.subject_count_totals(src[src[dim].astype(str).isin(keep)])
 
-    clicked = interactive.table(
+    ev = interactive.table(
         style.pivot_table_html(roll, dim, cfg["label"], clickable=True,
                                selected=None if current == "—" else current,
                                col_set=ss.pivot_cols, sparks=sparks,
-                               totals_override=subj_totals),
+                               totals_override=subj_totals,
+                               sort=ss.get("sort_pivot")),
         key="pivot_tbl", max_height=_cap_px(ss.pivot_rows),
     )
+    if ev.sort:
+        _toggle_sort("sort_pivot", ev.sort, roll,
+                     sparks=sparks, spark_key=_pivot_spark_key)
+    clicked = ev.select
     if clicked is not None and (clicked == current or clicked in options):
         # re-clicking the selected row closes the panel (template toggle behavior)
         ss["drill_dim"] = "—" if clicked == current else clicked
@@ -330,15 +368,15 @@ def render_inventory():
     if sq:
         subs_view = subs[subs["subject_name"].str.contains(sq, case=False, na=False)
                          | subs["brand"].str.contains(sq, case=False, na=False)]
-    if alpha:
-        subs_view = subs_view.sort_values(
-            "subject_name", key=lambda s: s.astype(str).str.lower(),
-            kind="stable").reset_index(drop=True)
 
     subj_sparks = None
     if hist_flt is not None:
         subj_sparks = tx.sparks_for(hist_flt[hist_flt[dim].astype(str) == sel],
                                     "subj_key", spark_months)
+
+    _subj_spark_key = (lambda r: str(r["subj_key"]))
+    subs_view = _apply_sort("sort_subj", subs_view,
+                            sparks=subj_sparks, spark_key=_subj_spark_key)
 
     # ── subjects: click a row (or use the selectbox below) to drill ──
     subj_opts = ["—"] + [f"{r.brand} — {r.subject_name}" for r in subs_view.itertuples()]
@@ -346,12 +384,17 @@ def render_inventory():
     if subj_current != "—" and subj_current not in subj_opts:
         subj_opts.append(subj_current)
 
-    subj_clicked = interactive.table(
+    subj_ev = interactive.table(
         style.subject_table_html(subs_view, show_brand, clickable=True,
                                  selected=None if subj_current == "—" else subj_current,
-                                 col_set=ss.pivot_cols, sparks=subj_sparks),
+                                 col_set=ss.pivot_cols, sparks=subj_sparks,
+                                 sort=ss.get("sort_subj")),
         key="subj_tbl", scroll=scroll_subjects, max_height=_cap_px(ss.subj_rows),
     )
+    if subj_ev.sort:
+        _toggle_sort("sort_subj", subj_ev.sort, subs_view,
+                     sparks=subj_sparks, spark_key=_subj_spark_key)
+    subj_clicked = subj_ev.select
     if subj_clicked is not None and (subj_clicked == subj_current or subj_clicked in subj_opts):
         ss["drill_subj"] = "—" if subj_clicked == subj_current else subj_clicked
         st.rerun()
@@ -373,11 +416,15 @@ def render_inventory():
         pc1, pc2 = st.columns([4, 1])
         pc1.markdown(f"#### {subj_v} — by program")
         _rows_select(pc2, "prog_rows")
-        interactive.table(style.pivot_table_html(
+        prog = _apply_sort("sort_prog", prog)
+        prog_ev = interactive.table(style.pivot_table_html(
                               prog, "program", "PROGRAM",
-                              totals_override=tx.subject_count_totals(prog_src)),
+                              totals_override=tx.subject_count_totals(prog_src),
+                              sort=ss.get("sort_prog")),
                           key="prog_tbl", scroll=scroll_items,
                           max_height=_cap_px(ss.prog_rows))
+        if prog_ev.sort:
+            _toggle_sort("sort_prog", prog_ev.sort, prog)
     else:
         items = tx.items_for(sub_src, brand_v, subj_v)
         i1, i2, i3 = st.columns([3, 0.8, 1])
@@ -394,11 +441,9 @@ def render_inventory():
                 | items["bin_location"].astype(str).str.contains(iq, case=False, na=False)
                 | items["subinventory_code"].astype(str).str.contains(iq, case=False, na=False)
             ]
-        if alpha:
-            items = items.sort_values(
-                ["item_number", "subinventory_code", "bin_location"],
-                key=lambda s: s.astype(str).str.lower(),
-                kind="stable").reset_index(drop=True)
+        # Click-to-sort. An explicit column sort intentionally breaks the default
+        # "rows for one item stay adjacent" grouping — that is the point of it.
+        items = _apply_sort("sort_item", items)
         export_df = (
             items.assign(subject=subj_v, brand=brand_v,
                          status=items["status"].map(tx.STATUS_LABELS))
@@ -420,8 +465,12 @@ def render_inventory():
                            file_name=f"relic_items_{brand_v}_{subj_v}.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                            width="stretch")
-        interactive.table(style.item_table_html(items), key="item_tbl",
-                          scroll=scroll_items, max_height=_cap_px(ss.item_rows))
+        item_ev = interactive.table(
+            style.item_table_html(items, sort=ss.get("sort_item")),
+            key="item_tbl", scroll=scroll_items,
+            max_height=_cap_px(ss.item_rows))
+        if item_ev.sort:
+            _toggle_sort("sort_item", item_ev.sort, items)
 
 
 def render_trends():

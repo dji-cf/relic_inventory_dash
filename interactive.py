@@ -11,8 +11,16 @@ isolating default applies). That is why the table CSS ships via css= — page
 styles can't pierce the shadow root — and why the JS must write into the
 .mount child: replacing parentElement's innerHTML would wipe the injected
 <style>.
+
+Two independent triggers flow back to Python:
+  select : a tbody row's data-key (drill-down)
+  sort   : a thead cell's data-sort (column sort)
+They can never collide — data-key is only ever emitted inside <tbody> and
+data-sort only inside <thead> (see style.py).
 """
 from __future__ import annotations
+
+from typing import NamedTuple
 
 import streamlit as st
 
@@ -20,8 +28,8 @@ from style import TABLE_CSS
 
 _SHELL_HTML = '<div class="fct"><div class="mount"></div></div>'
 
-# Re-runs whenever the mounted data changes: re-render the table, rebind row
-# clicks, and (one-shot, Python-controlled) scroll the table into view.
+# Re-runs whenever the mounted data changes: re-render the table, rebind row +
+# header clicks, and (one-shot, Python-controlled) scroll the table into view.
 _JS = """
 export default function ({ data, setTriggerValue, parentElement }) {
   const mount = parentElement.querySelector('.mount');
@@ -35,6 +43,12 @@ export default function ({ data, setTriggerValue, parentElement }) {
   mount.querySelectorAll('tbody tr[data-key]').forEach((tr) => {
     tr.addEventListener('click', () => setTriggerValue('select', tr.getAttribute('data-key')));
   });
+  // Column sort: the sorting itself happens in pandas on the real values, so
+  // this only reports WHICH column was clicked. Sorting rendered cell text here
+  // would order formatted strings ($1,234 / 120d / — ) instead of numbers.
+  mount.querySelectorAll('thead th[data-sort]').forEach((th) => {
+    th.addEventListener('click', () => setTriggerValue('sort', th.getAttribute('data-sort')));
+  });
   if (data.scroll) {
     const el = wrap || mount.firstElementChild;
     // ~80ms mirrors the template's scrollBelowHeader timing; lets layout settle
@@ -47,13 +61,26 @@ _renderer = st.components.v2.component("fct_table", html=_SHELL_HTML,
                                        css=TABLE_CSS, js=_JS)
 
 
+class TableEvent(NamedTuple):
+    """Transient click results for one mounted table.
+
+    Both fields are non-None only on the script run caused by that click.
+    ``select`` is a row's data-key (drill-down); ``sort`` is a header's
+    data-sort (the column to sort by).
+    """
+
+    select: str | None
+    sort: str | None
+
+
 def table(html: str, *, key: str, scroll: bool = False,
-          max_height: int | None = None) -> str | None:
-    """Mount an .fct table block; returns the clicked row's data-key, if any.
+          max_height: int | None = None) -> TableEvent:
+    """Mount an .fct table block; report row-click and header-click events.
 
     Rows carry data-key only when built with clickable=True (style.py), so
     plain tables mounted through here are static but still scrollable targets.
-    The returned value is a transient trigger: it is non-None only on the
+    Headers carry data-sort whenever the builder was given a sortable column
+    spec. Both returned values are transient triggers: non-None only on the
     script run caused by the click.
 
     max_height (px) caps the table's scroll container for the rows-per-view
@@ -61,5 +88,6 @@ def table(html: str, *, key: str, scroll: bool = False,
     """
     res = _renderer(key=key,
                     data={"html": html, "scroll": scroll, "maxHeight": max_height},
-                    on_select_change=lambda: None)
-    return res.select
+                    on_select_change=lambda: None,
+                    on_sort_change=lambda: None)
+    return TableEvent(res.select, res.sort)
