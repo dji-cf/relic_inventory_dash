@@ -40,6 +40,9 @@ _ACRONYMS = {
     "UEFA", "EPL", "NASCAR", "PGA", "LPGA", "ATP", "WTA", "MMA", "XFL", "CFL",
     "AFL", "NRL", "IPL", "NPB", "KBO", "OTE", "NIL", "F1", "USA", "AAA", "II",
     "III", "IV", "TV", "&", "-",
+    # football-club / competition abbreviations that appear inside subject names
+    # ("1. FC HEIDENHEIM 1846", "1. FSV MAINZ 05", "2020 UCL FINAL")
+    "FC", "FSV", "UCL", "DFL", "VHS",
     # short internal brand codes that are not words
     "CHP", "DIS", "GPK", "MCD", "MRV", "STW", "TEN", "TWD", "VFR",
 }
@@ -48,18 +51,28 @@ _ACRONYMS = {
 _CASE_OVERRIDES = {"MCDONALDS": "McDonalds", "SPONGEBOB": "SpongeBob"}
 
 
-def _cap_word(w: str) -> str:
-    """Capitalise a single word, respecting internal hyphens and apostrophes.
+# Characters that separate sub-words INSIDE one token. Each part gets capitalised,
+# which is what turns ABDUL-JABBAR into Abdul-Jabbar, JA'MARR into Ja'Marr,
+# SHOES(PAIR) into Shoes(Pair) and YONDU/KRAGLIN into Yondu/Kraglin.
+_WORD_SEPS = ("'", "-", "_", "(", "/")
 
-    Splits on ' and - so "O'NEAL" becomes "O'Neal" and "ALL-STAR" becomes
-    "All-Star". A one-letter tail after an apostrophe stays lowercase, which is
-    what keeps possessives readable ("MEN'S" -> "Men's", not "Men'S").
+
+def _cap_word(w: str) -> str:
+    """Capitalise a single word, respecting internal punctuation.
+
+    A one-letter tail after a separator stays lowercase, which is what keeps
+    possessives readable ("LOKI'S" -> "Loki's", not "Loki'S") while still giving
+    "JA'MARR" -> "Ja'Marr". Surnames beginning with Mc get the conventional inner
+    capital ("MCCUTCHEN" -> "McCutchen", "MCLAREN" -> "McLaren"); Mac is left
+    alone because it is not reliably a prefix ("MACEY" is not "MacEy").
     """
     out = w.lower()
-    for sep in ("'", "-"):
+    for sep in _WORD_SEPS:
         parts = out.split(sep)
         out = sep.join(p if i and len(p) == 1 else p[:1].upper() + p[1:]
                        for i, p in enumerate(parts))
+    if len(out) > 3 and out[:2].lower() == "mc":
+        out = "Mc" + out[2:3].upper() + out[3:]
     return out
 
 
@@ -69,6 +82,15 @@ def title_case(value) -> str:
     Idempotent and safe on already-cased input, so it can be applied at any
     render site without having to know whether the value came from Oracle raw or
     from a previously formatted string.
+
+    Two classes of token are passed through UNTOUCHED rather than capitalised,
+    because for both of them lowercasing destroys meaning:
+
+      * anything containing a DIGIT -- program codes ("MLB2624"), age buckets
+        ("0-90"), model/year strings ("50FT", "U-21", "2024-25"). These are
+        identifiers, not words.
+      * anything containing an internal DOT -- personal initials ("C.J.",
+        "H.W."), which would otherwise come back as "C.j.".
     """
     s = str(value)
     words = []
@@ -81,6 +103,8 @@ def title_case(value) -> str:
             core = _CASE_OVERRIDES[key]
         elif key in _ACRONYMS or not core:
             core = core.upper() if core else core
+        elif any(c.isdigit() for c in core) or "." in core:
+            pass                      # identifier or initials -- must not change
         elif any(c.islower() for c in core):
             pass                      # already hand-cased -- leave it alone
         else:
@@ -89,10 +113,26 @@ def title_case(value) -> str:
     return " ".join(words)
 
 
-# Frame columns whose values are rendered through title_case(). Brand is the only
-# approved one today; adding "team" or "relic_form_type" here is all it would take
-# to extend the same treatment, since every render site consults this set.
-_TITLECASE_COLS = {"brand"}
+# Frame columns whose VALUES render through title_case(). These are the fields
+# that can occupy the leading label column of a table: the five pivot dimensions
+# plus the subject name in the subject drill. Deliberately excluded are
+# item_number (a code) and the numeric columns.
+#
+# "program" is safe to include only because of the digit rule in title_case:
+# program codes like MLB2624 come through untouched while "NO PROGRAM" becomes
+# "No Program". "age_bucket" is a no-op today (its labels already carry
+# lowercase) and is listed so a future relabelling stays consistent.
+_TITLECASE_COLS = {"brand", "subject_name", "relic_form_type",
+                   "item_used_status", "program", "age_bucket"}
+
+
+def display_dim(col: str, value) -> str:
+    """Display form of a dimension VALUE for frame column ``col``.
+
+    Single place every render site asks "how should this label look?", so the
+    tables, the drill selectors and the panel headings can never disagree.
+    """
+    return title_case(value) if col in _TITLECASE_COLS else str(value)
 
 # Freshness tooltips read best in the reader's own wall-clock time. The zone is
 # PINNED rather than taken from the host clock: the SiS container runs in UTC, so
@@ -768,9 +808,7 @@ def pivot_table_html(roll, dim_col: str, dim_label: str,
 
     def name_cell(r):
         # display-only casing; row_attrs below still keys off the raw value
-        shown = (title_case(r[dim_col]) if dim_col in _TITLECASE_COLS
-                 else str(r[dim_col]))
-        return f'<div>{escape(shown)}</div>{_bar(r["wv"], r["nwv"], r["csv"])}'
+        return f'<div>{escape(display_dim(dim_col, r[dim_col]))}</div>{_bar(r["wv"], r["nwv"], r["csv"])}'
 
     def row_attrs(r):
         val = str(r[dim_col])
@@ -794,9 +832,9 @@ def subject_table_html(subs, show_brand_sublabel: bool = False,
     groups = _col_groups(col_set, three_stats=False)
 
     def name_cell(r):
-        name = escape(str(r["subject_name"]))
+        name = escape(display_dim("subject_name", r["subject_name"]))
         if show_brand_sublabel:
-            brand = escape(title_case(r["brand"]))
+            brand = escape(display_dim("brand", r["brand"]))
             name = f'<div>{name}</div><div class="sub-label">{brand}</div>'
         return name
 

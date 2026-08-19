@@ -63,29 +63,31 @@ def _label(opt) -> str:
     return _LABEL_OVERRIDES.get(s, s.capitalize())
 
 
-def _brand_opt(opt) -> str:
-    """Display casing for a selector option whose value is a brand.
+def _dim_opt(dim: str, empty: str = "—"):
+    """format_func for a selector whose options are raw values of column ``dim``.
 
-    Brands are stored (and grouped) in caps, so every selector that lists them
-    needs the same title-casing the tables use -- otherwise the row reads "Major
-    League Baseball" while the dropdown under it still shouts. The option VALUE is
-    untouched, so drill state and filtering keep comparing canonical values.
+    The option VALUE is untouched, so drill state and filtering keep comparing
+    canonical values; only the rendered label is recased. ``empty`` is the label
+    used for the blank "no selection" option.
     """
-    s = str(opt)
-    return s if s in ("\u2014", "") else style.title_case(s)
+    def fmt(opt) -> str:
+        s = str(opt)
+        return empty if s in ("—", "") else style.display_dim(dim, s)
+    return fmt
 
 
 def _subj_opt(opt) -> str:
     """Display casing for a "BRAND \u2014 SUBJECT" drill option.
 
-    Only the brand half is recased; subject names are already stored mixed-case.
-    The value still round-trips through ``split(" \u2014 ", 1)`` unchanged.
+    Both halves are recased, each as its own field. The value still round-trips
+    through ``split(" \u2014 ", 1)`` unchanged.
     """
     s = str(opt)
     if " \u2014 " not in s:
         return s
     brand, subject = s.split(" \u2014 ", 1)
-    return f"{style.title_case(brand)} \u2014 {subject}"
+    return (f"{style.display_dim('brand', brand)} \u2014 "
+            f"{style.display_dim('subject_name', subject)}")
 
 
 def month_label(d: str) -> str:
@@ -263,12 +265,16 @@ with st.expander("Filters", expanded=False):
                       ("g_brand", brands), ("g_subinv", subinvs)):
         if ss.get(_k) not in _opts:  # drop a selection that no longer exists this month
             ss[_k] = ""
+    # the Type / Used status / Brand filters list the very same values that appear
+    # as pivot row labels, so they go through the same display helper
     g_team = f1.selectbox("Team", teams, format_func=lambda x: x or "All Teams", key="g_team")
-    g_ft = f2.selectbox("Type", fts, format_func=lambda x: x or "All Types", key="g_ft")
-    g_us = f3.selectbox("Used Status", uss, format_func=lambda x: x or "All Used Status", key="g_us")
+    g_ft = f2.selectbox("Type", fts, format_func=_dim_opt("relic_form_type", "All Types"),
+                        key="g_ft")
+    g_us = f3.selectbox("Used Status", uss,
+                        format_func=_dim_opt("item_used_status", "All Used Status"),
+                        key="g_us")
     g_brand = f4.selectbox("Brand", brands,
-                           format_func=lambda x: style.title_case(x) if x else "All Brands",
-                           key="g_brand")
+                           format_func=_dim_opt("brand", "All Brands"), key="g_brand")
     g_subinv = f5.selectbox("Sub-Inventory", subinvs,
                             format_func=lambda x: x or "All Sub-Inventories", key="g_subinv")
 
@@ -392,7 +398,7 @@ def render_inventory():
         st.rerun()
 
     sel = st.selectbox(f"Drill into {cfg['label'].lower()}", options, key="drill_dim",
-                       format_func=_brand_opt if dim == "brand" else str)
+                       format_func=_dim_opt(dim))
     scroll_subjects = sel != "—" and sel != ss.get("_prev_drill_dim")
     if sel != ss.get("_prev_drill_dim"):
         ss["_prev_drill_dim"] = sel
@@ -412,7 +418,7 @@ def render_inventory():
     # union count + per-type counts (subjects with items in several types are in
     # each type's count but once in the union, so the parts can exceed the total)
     st.html(style.open_fct() + style.panel_title_html(
-        _brand_opt(sel) if dim == "brand" else str(sel),
+        style.display_dim(dim, sel),
         f"{tx.fmtq(len(subs))} subjects · {tx.fmtq(subs['ws'].sum())} whole / "
         f"{tx.fmtq(subs['nws'].sum())} non-whole / "
         f"{tx.fmtq(subs['css'].sum())} cut sig") + style.close_fct())
@@ -472,7 +478,8 @@ def render_inventory():
                            & (sub_src["status"] == "S")]
         pc1, pc2 = st.columns([4, 1])
         pc1.html(style.open_fct()
-                 + style.panel_title_html(f"{subj_v} — by program")
+                 + style.panel_title_html(
+                     f"{style.display_dim('subject_name', subj_v)} — by program")
                  + style.close_fct())
         _rows_select(pc2, "prog_rows")
         prog = _apply_sort("sort_prog", prog)
@@ -489,7 +496,7 @@ def render_inventory():
         i1, i2, i3 = st.columns([3, 0.8, 1])
         n_items = items["item_number"].nunique()
         i1.html(style.open_fct() + style.panel_title_html(
-            str(subj_v),
+            style.display_dim("subject_name", subj_v),
             f"{tx.fmtq(n_items)} items · {tx.fmtq(len(items))} rows")
             + style.close_fct())
         iq = i1.text_input("Filter items", key="item_search",
@@ -566,11 +573,12 @@ def render_trends():
     elif dim == "subj_key":
         long[dim] = (long[dim].str.replace(" ||| ", " — ", regex=False)
                      .map(_subj_opt))
-    elif dim == "brand":
+    else:
         # chart legend/axis/tooltip and the movers table are all terminal display
         # surfaces here (the movers search is case-insensitive), so recasing the
-        # category cannot break a lookup
-        long[dim] = long[dim].map(_brand_opt)
+        # category cannot break a lookup. display_dim is a no-op for dimensions
+        # that are not in the title-case set.
+        long[dim] = long[dim].map(lambda v: style.display_dim(dim, v))
     long = long.rename(columns={dim: "cat"})
 
     lbl = {m: month_label(m) for m in months}
