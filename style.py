@@ -75,11 +75,11 @@ _CHROME_CSS = """
    itself; the subtitle shares the title's weight and is distinguished by size and
    colour instead, so no heading anywhere uses a weight other than 700. */
 .fct .logo { font-size:24px; font-weight:700; letter-spacing:1px; color:#fff; line-height:1; }
-.fct .logo span { color:#7a99c0; font-size:15px; font-weight:700; letter-spacing:.2px; }
+.fct .logo span { color:#7a99c0; font-size:15px; font-weight:600; letter-spacing:.2px; }
 /* wrap + row-gap so the 4th field (DATA PULLED) drops to a second line on a
    narrow viewport instead of overflowing the header card. */
 .fct .hdr-meta { margin-left:auto; display:flex; gap:26px; row-gap:10px; flex-wrap:wrap;
-  font-size:10px; font-weight:700; letter-spacing:.6px; color:#7a99c0; }
+  font-size:10px; font-weight:600; letter-spacing:.6px; color:#7a99c0; }
 .fct .hdr-meta b { color:#fff; font-size:14px; font-weight:700; letter-spacing:0;
   display:block; margin-top:2px; }
 /* DATA PULLED carries a tooltip with the absolute timestamp; the dotted underline
@@ -92,7 +92,7 @@ _CHROME_CSS = """
 /* CONTEXT BAR */
 .fct .context-bar { display:flex; align-items:center; gap:10px; margin:0 0 14px; }
 .fct .context-status, .fct .context-view {
-  font-size:11px; font-weight:700; letter-spacing:.3px;
+  font-size:11px; font-weight:600; letter-spacing:.3px;
   padding:4px 11px; border-radius:5px; color:#fff; }
 .fct .context-status { background:var(--gold); }
 .fct .context-status.status-U { background:var(--whole); }
@@ -110,18 +110,21 @@ _CHROME_CSS = """
 .fct .stat-card.nonwhole { border-top-color:var(--nonwhole); }
 .fct .stat-card.cutsig { border-top-color:var(--cutsig); }
 /* TYPOGRAPHIC SCALE FOR HEADINGS.
-   Weights previously ran 400 / 600 / 700 / 800 with five different
-   letter-spacings, which is what read as "some are bolded and some are not".
-   Every heading now uses ONE weight (700) and one of two letter-spacings, so the
-   only thing that varies between tiers is size:
+   Headings are SEMIBOLD (600), not bold — having every header at 700 made the
+   page read as uniformly heavy. Full bold (700) is now reserved for numeric
+   VALUES (stat-card figures, the gold total column, table footers), so weight
+   carries meaning: 600 = a label, 700 = a number that matters.
+
+   One weight and one of two tracking values across all four tiers; the only
+   thing that differs between them is size:
 
      .panel-title  15px  — drill panel heading (the entity you drilled into)
      .sec-title    12px  — section heading with the trailing rule
      thead th      11px  — table column header
      .lbl          10px  — eyebrow label on cards / header meta
 
-   All sentence case; nothing is uppercase any more. */
-.fct .stat-card .lbl { font-size:10px; font-weight:700;
+   All sentence case; nothing is uppercase. */
+.fct .stat-card .lbl { font-size:10px; font-weight:600;
   letter-spacing:.6px; color:var(--muted); margin-bottom:6px; }
 .fct .stat-card .val { font-size:26px; font-weight:700; line-height:1.1; letter-spacing:-.5px;
   font-variant-numeric:tabular-nums; }
@@ -134,14 +137,14 @@ _CHROME_CSS = """
 .fct .legend-dot { width:10px; height:10px; border-radius:2px; }
 
 /* TREND TITLES */
-.fct .sec-title { font-size:12px; font-weight:700; letter-spacing:.3px;
+.fct .sec-title { font-size:12px; font-weight:600; letter-spacing:.3px;
   color:var(--muted); margin:8px 0 12px; display:flex; align-items:center; gap:10px; }
 .fct .sec-title::after { content:''; flex:1; height:1px; background:var(--border); }
 
 /* Drill panel heading. Replaces a Streamlit markdown "####", which was styled by
    Streamlit's own heading font/weight (600) and was the single biggest outlier
    among the heading surfaces. */
-.fct .panel-title { font-size:15px; font-weight:700; letter-spacing:.2px;
+.fct .panel-title { font-size:15px; font-weight:600; letter-spacing:.2px;
   color:var(--text); margin:14px 0 10px; }
 .fct .panel-title .panel-sub { font-size:12px; font-weight:400; color:var(--muted);
   letter-spacing:0; margin-left:10px; }
@@ -166,9 +169,9 @@ TABLE_CSS = _BASE_CSS + """
   box-shadow:0 1px 4px rgba(0,0,0,.08); margin-bottom:8px; }
 .fct table { width:100%; border-collapse:collapse; }
 .fct thead th { background:#1a2b4a; padding:8px 10px; text-align:center; font-size:11px;
-  font-weight:700; letter-spacing:.3px; color:#fff; white-space:nowrap; }
+  font-weight:600; letter-spacing:.3px; color:#fff; white-space:nowrap; }
 .fct thead th:first-child { text-align:left; background:#000; }
-.fct .cg th { font-size:11px; font-weight:700; letter-spacing:.3px; padding:6px 10px;
+.fct .cg th { font-size:11px; font-weight:600; letter-spacing:.3px; padding:6px 10px;
   text-align:center; color:#fff; }
 .fct .cg th.th-whole { background:#1f3d6a; }
 .fct .cg th.th-nonwhole { background:#166534; }

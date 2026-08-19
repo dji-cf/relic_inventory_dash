@@ -57,7 +57,13 @@ export default function ({ data, setTriggerValue, parentElement }) {
 }
 """
 
-_renderer = st.components.v2.component("fct_table", html=_SHELL_HTML,
+# The component NAME is versioned deliberately. A v2 component's css=/js= are
+# registered once per name, so editing TABLE_CSS while keeping the old name can
+# leave a browser serving the previously registered stylesheet — which is exactly
+# what kept rendering table headers in UPPERCASE after text-transform was removed
+# (the per-render HTML was already correct; only the CSS was stale). Bump this
+# suffix whenever TABLE_CSS or _JS changes in a way that must reach clients.
+_renderer = st.components.v2.component("fct_table_v2", html=_SHELL_HTML,
                                        css=TABLE_CSS, js=_JS)
 
 
