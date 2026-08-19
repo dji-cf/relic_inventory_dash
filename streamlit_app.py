@@ -31,11 +31,11 @@ with st.sidebar:  # fragment can't open st.sidebar itself; wrap the call here
 
 # ── view config ───────────────────────────────────────────────────────────────
 VIEWS = {
-    "BY BRAND / SPORT": dict(col="brand", label="BRAND / SPORT", view="By brand / sport"),
-    "BY FORM TYPE":     dict(col="relic_form_type", label="TYPE", view="By type"),
-    "BY USED STATUS":   dict(col="item_used_status", label="USED STATUS", view="By used status"),
-    "BY PROGRAM":       dict(col="program", label="PROGRAM", view="By program (slated)"),
-    "BY AGE":           dict(col="age_bucket", label="AGE BUCKET", view="By age"),
+    "BY BRAND / SPORT": dict(col="brand", label="Brand / sport", view="By brand / sport"),
+    "BY FORM TYPE":     dict(col="relic_form_type", label="Type", view="By type"),
+    "BY USED STATUS":   dict(col="item_used_status", label="Used status", view="By used status"),
+    "BY PROGRAM":       dict(col="program", label="Program", view="By program (slated)"),
+    "BY AGE":           dict(col="age_bucket", label="Age bucket", view="By age"),
 }
 STATUS_OPTS = {"ALL": "A", "UNSLATED": "U", "SLATED": "S", "OBSOLETE": "O"}
 COL_SETS = ["STANDARD", "+AGE", "STATUS + AGE"]
@@ -383,10 +383,11 @@ def render_inventory():
 
     # union count + per-type counts (subjects with items in several types are in
     # each type's count but once in the union, so the parts can exceed the total)
-    st.markdown(f"#### {sel} &nbsp; <span style='color:#6b7fa3;font-size:14px'>"
-                f"{tx.fmtq(len(subs))} subjects · {tx.fmtq(subs['ws'].sum())} whole / "
-                f"{tx.fmtq(subs['nws'].sum())} non-whole / "
-                f"{tx.fmtq(subs['css'].sum())} cut sig</span>", unsafe_allow_html=True)
+    st.html(style.open_fct() + style.panel_title_html(
+        str(sel),
+        f"{tx.fmtq(len(subs))} subjects · {tx.fmtq(subs['ws'].sum())} whole / "
+        f"{tx.fmtq(subs['nws'].sum())} non-whole / "
+        f"{tx.fmtq(subs['css'].sum())} cut sig") + style.close_fct())
     sc1, sc2 = st.columns([4, 1])
     sq = sc1.text_input("Filter subjects", key="subj_search",
                         placeholder="Filter subjects…", label_visibility="collapsed")
@@ -441,11 +442,13 @@ def render_inventory():
                            & (sub_src["subject_name"] == subj_v)
                            & (sub_src["status"] == "S")]
         pc1, pc2 = st.columns([4, 1])
-        pc1.markdown(f"#### {subj_v} — by program")
+        pc1.html(style.open_fct()
+                 + style.panel_title_html(f"{subj_v} — by program")
+                 + style.close_fct())
         _rows_select(pc2, "prog_rows")
         prog = _apply_sort("sort_prog", prog)
         prog_ev = interactive.table(style.pivot_table_html(
-                              prog, "program", "PROGRAM",
+                              prog, "program", "Program",
                               totals_override=tx.subject_count_totals(prog_src),
                               sort=ss.get("sort_prog")),
                           key="prog_tbl", scroll=scroll_items,
@@ -456,9 +459,10 @@ def render_inventory():
         items = tx.items_for(sub_src, brand_v, subj_v)
         i1, i2, i3 = st.columns([3, 0.8, 1])
         n_items = items["item_number"].nunique()
-        i1.markdown(f"#### {subj_v} &nbsp; <span style='color:#6b7fa3;font-size:14px'>"
-                    f"{tx.fmtq(n_items)} items · {tx.fmtq(len(items))} rows</span>",
-                    unsafe_allow_html=True)
+        i1.html(style.open_fct() + style.panel_title_html(
+            str(subj_v),
+            f"{tx.fmtq(n_items)} items · {tx.fmtq(len(items))} rows")
+            + style.close_fct())
         iq = i1.text_input("Filter items", key="item_search",
                            placeholder="Filter by item #, bin, or sub-inv…",
                            label_visibility="collapsed")
@@ -525,7 +529,7 @@ def render_trends():
                             formtype=g_ft, usedstatus=g_us, brand=g_brand,
                             subinventory=g_subinv)
     if status_dim and status_code != "A":
-        st.caption("Status filter is ignored for the STATUS dimension.")
+        st.caption("Status filter is ignored for the Status dimension.")
 
     long = tx.history_long(hist, dim, metric, months)
     if status_dim:
@@ -543,16 +547,16 @@ def render_trends():
     cur = float(per_month.get(anchor, 0.0))
     idx = months.index(anchor)
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric(f"TOTAL ({month_label(anchor)})", fmtv(cur))
+    m1.metric(f"Total ({month_label(anchor)})", fmtv(cur))
     for col, k in ((m2, 1), (m3, 3), (m4, 6)):
         j = idx - k
         if j < 0:
-            col.metric(f"Δ {k} MO", "—")
+            col.metric(f"Δ {k} mo", "—")
         else:
             base = float(per_month.iloc[j])
             delta = cur - base
             pct = (delta / base * 100.0) if base else 0.0
-            col.metric(f"Δ {k} MO", fmtv(delta), f"{pct:+.1f}%")
+            col.metric(f"Δ {k} mo", fmtv(delta), f"{pct:+.1f}%")
 
     folded, cat_order = tx.top_n_other(long, "cat", int(ss.get("trend_topn", 12)), anchor)
     folded = folded.copy()
@@ -565,7 +569,7 @@ def render_trends():
     else:
         cap = max(1.0, float(mom["delta"].abs().quantile(0.95)))
         st.altair_chart(charts.mom_heatmap(mom, month_lbls, cat_order,
-                                           ss.trend_metric, cap))
+                                           _label(ss.trend_metric), cap))
 
     st.html(style.open_fct() + f'<div class="sec-title">Top {int(ss.get("trend_topn", 12))} trend — {_label(ss.trend_dim)}</div>' + style.close_fct())
     st.altair_chart(charts.trend_lines_chart(

@@ -71,13 +71,17 @@ _CHROME_CSS = """
 .fct .hdr { background:#1a2b4a; border-radius:10px; padding:14px 22px; margin-bottom:18px;
   box-shadow:0 2px 8px rgba(0,0,0,.25); }
 .fct .hdr-top { display:flex; align-items:center; gap:18px; flex-wrap:wrap; }
+/* App title lockup. The 1px tracking here is deliberate branding on the title
+   itself; the subtitle shares the title's weight and is distinguished by size and
+   colour instead, so no heading anywhere uses a weight other than 700. */
 .fct .logo { font-size:24px; font-weight:700; letter-spacing:1px; color:#fff; line-height:1; }
-.fct .logo span { color:#7a99c0; font-size:15px; font-weight:600; }
+.fct .logo span { color:#7a99c0; font-size:15px; font-weight:700; letter-spacing:.2px; }
 /* wrap + row-gap so the 4th field (DATA PULLED) drops to a second line on a
    narrow viewport instead of overflowing the header card. */
 .fct .hdr-meta { margin-left:auto; display:flex; gap:26px; row-gap:10px; flex-wrap:wrap;
-  font-size:12px; color:#7a99c0; }
-.fct .hdr-meta b { color:#fff; font-size:14px; display:block; margin-top:2px; }
+  font-size:10px; font-weight:700; letter-spacing:.6px; color:#7a99c0; }
+.fct .hdr-meta b { color:#fff; font-size:14px; font-weight:700; letter-spacing:0;
+  display:block; margin-top:2px; }
 /* DATA PULLED carries a tooltip with the absolute timestamp; the dotted underline
    advertises that there is something to hover. Keep the inherited display:block so
    the value stacks under its label like every other field — width:fit-content is
@@ -88,7 +92,7 @@ _CHROME_CSS = """
 /* CONTEXT BAR */
 .fct .context-bar { display:flex; align-items:center; gap:10px; margin:0 0 14px; }
 .fct .context-status, .fct .context-view {
-  font-size:12px; font-weight:700; letter-spacing:.8px;
+  font-size:11px; font-weight:700; letter-spacing:.3px;
   padding:4px 11px; border-radius:5px; color:#fff; }
 .fct .context-status { background:var(--gold); }
 .fct .context-status.status-U { background:var(--whole); }
@@ -105,8 +109,20 @@ _CHROME_CSS = """
 .fct .stat-card.total { border-top-color:var(--gold); background:#fffbf0; }
 .fct .stat-card.nonwhole { border-top-color:var(--nonwhole); }
 .fct .stat-card.cutsig { border-top-color:var(--cutsig); }
+/* TYPOGRAPHIC SCALE FOR HEADINGS.
+   Weights previously ran 400 / 600 / 700 / 800 with five different
+   letter-spacings, which is what read as "some are bolded and some are not".
+   Every heading now uses ONE weight (700) and one of two letter-spacings, so the
+   only thing that varies between tiers is size:
+
+     .panel-title  15px  — drill panel heading (the entity you drilled into)
+     .sec-title    12px  — section heading with the trailing rule
+     thead th      11px  — table column header
+     .lbl          10px  — eyebrow label on cards / header meta
+
+   All sentence case; nothing is uppercase any more. */
 .fct .stat-card .lbl { font-size:10px; font-weight:700;
-  letter-spacing:.7px; color:var(--muted); margin-bottom:6px; }
+  letter-spacing:.6px; color:var(--muted); margin-bottom:6px; }
 .fct .stat-card .val { font-size:26px; font-weight:700; line-height:1.1; letter-spacing:-.5px;
   font-variant-numeric:tabular-nums; }
 .fct .stat-card .sub { font-size:11px; color:var(--muted); margin-top:3px; font-variant-numeric:tabular-nums; }
@@ -118,9 +134,17 @@ _CHROME_CSS = """
 .fct .legend-dot { width:10px; height:10px; border-radius:2px; }
 
 /* TREND TITLES */
-.fct .sec-title { font-size:12px; font-weight:700; letter-spacing:1px;
+.fct .sec-title { font-size:12px; font-weight:700; letter-spacing:.3px;
   color:var(--muted); margin:8px 0 12px; display:flex; align-items:center; gap:10px; }
 .fct .sec-title::after { content:''; flex:1; height:1px; background:var(--border); }
+
+/* Drill panel heading. Replaces a Streamlit markdown "####", which was styled by
+   Streamlit's own heading font/weight (600) and was the single biggest outlier
+   among the heading surfaces. */
+.fct .panel-title { font-size:15px; font-weight:700; letter-spacing:.2px;
+  color:var(--text); margin:14px 0 10px; }
+.fct .panel-title .panel-sub { font-size:12px; font-weight:400; color:var(--muted);
+  letter-spacing:0; margin-left:10px; }
 
 /* Hide the vega-embed actions menu (⋯ Save as SVG/PNG, View Source, …). Not wanted
    on this dashboard, and Streamlit builds that force-show it do so with vega-embed's
@@ -141,10 +165,11 @@ TABLE_CSS = _BASE_CSS + """
 .fct .table-wrap { background:var(--surface); border-radius:8px; overflow-x:auto;
   box-shadow:0 1px 4px rgba(0,0,0,.08); margin-bottom:8px; }
 .fct table { width:100%; border-collapse:collapse; }
-.fct thead th { background:#1a2b4a; padding:8px 10px; text-align:center; font-size:10px;
-  font-weight:700; letter-spacing:.4px; text-transform:uppercase; color:#fff; white-space:nowrap; }
+.fct thead th { background:#1a2b4a; padding:8px 10px; text-align:center; font-size:11px;
+  font-weight:700; letter-spacing:.3px; color:#fff; white-space:nowrap; }
 .fct thead th:first-child { text-align:left; background:#000; }
-.fct .cg th { font-size:10px; font-weight:800; padding:6px 10px; text-align:center; color:#fff; }
+.fct .cg th { font-size:11px; font-weight:700; letter-spacing:.3px; padding:6px 10px;
+  text-align:center; color:#fff; }
 .fct .cg th.th-whole { background:#1f3d6a; }
 .fct .cg th.th-nonwhole { background:#166534; }
 .fct .cg th.th-cutsig { background:#7f1d1d; }
@@ -398,6 +423,17 @@ def context_bar_html(status: str, view_label: str) -> str:
     )
 
 
+def panel_title_html(title: str, sub: str | None = None) -> str:
+    """Drill panel heading + optional muted sub-text (counts).
+
+    Used instead of a Streamlit markdown "####" so the heading is styled by our
+    own scale rather than Streamlit's heading font, which made it the biggest
+    outlier among the heading surfaces.
+    """
+    subtxt = f'<span class="panel-sub">{escape(sub)}</span>' if sub else ""
+    return f'<div class="panel-title">{escape(title)}{subtxt}</div>'
+
+
 def legend_html() -> str:
     return (
         '<div class="legend">'
@@ -513,27 +549,27 @@ def _fmt_pct12(d) -> str:
 
 def _type_groups(three_stats: bool):
     def cols(p, cls):
-        out = [("QTY", lambda d, k=f"{p}q": fmtq(d[k]), cls, f"{p}q")]
+        out = [("Qty", lambda d, k=f"{p}q": fmtq(d[k]), cls, f"{p}q")]
         if three_stats:
-            out.append(("SUBJ", lambda d, k=f"{p}s": fmtq(d[k]), cls, f"{p}s"))
-        out.append(("VALUE", lambda d, k=f"{p}v": fmt(d[k]), cls, f"{p}v"))
+            out.append(("Subj", lambda d, k=f"{p}s": fmtq(d[k]), cls, f"{p}s"))
+        out.append(("Value", lambda d, k=f"{p}v": fmt(d[k]), cls, f"{p}v"))
         return out
 
     return [
-        ("◆ WHOLE", "th-whole", cols("w", "td-whole")),
-        ("◆ NON-WHOLE", "th-nonwhole", cols("nw", "td-nonwhole")),
-        ("◆ CUT SIG", "th-cutsig", cols("cs", "td-cutsig")),
+        ("◆ Whole", "th-whole", cols("w", "td-whole")),
+        ("◆ Non-whole", "th-nonwhole", cols("nw", "td-nonwhole")),
+        ("◆ Cut sig", "th-cutsig", cols("cs", "td-cutsig")),
     ]
 
 
-_TOTAL_GROUP = ("", "th-total", [("TOTAL VALUE", lambda d: fmt(d["tv"]), "td-total", "tv")])
-_STATUS_GROUP = ("◆ STATUS", "th-status", [
-    ("SLATED", lambda d: fmt(d["slv"]), "td-slated", "slv"),
-    ("UNSLATED", lambda d: fmt(d["uslv"]), "td-unslated", "uslv"),
+_TOTAL_GROUP = ("", "th-total", [("Total value", lambda d: fmt(d["tv"]), "td-total", "tv")])
+_STATUS_GROUP = ("◆ Status", "th-status", [
+    ("Slated", lambda d: fmt(d["slv"]), "td-slated", "slv"),
+    ("Unslated", lambda d: fmt(d["uslv"]), "td-unslated", "uslv"),
 ])
-_AGE_GROUP = ("◆ AGE", "th-age", [
-    ("AVG AGE", _fmt_avg_age, "td-age", SORT_AVG_AGE),
-    ("%>1yr VAL", _fmt_pct12, "td-age", SORT_PCT12),
+_AGE_GROUP = ("◆ Age", "th-age", [
+    ("Avg age", _fmt_avg_age, "td-age", SORT_AVG_AGE),
+    ("%>1yr value", _fmt_pct12, "td-age", SORT_PCT12),
 ])
 
 
@@ -589,7 +625,7 @@ def _table_html(groups, first_header, frame, name_cell, row_attrs, spark_key,
             chead.append(_th(h, gcss, skey, sort))
     if has_trend:
         ghead.append('<th class="th-trend"></th>')
-        chead.append(_th("TREND · Δ", "th-trend", SORT_TREND, sort))
+        chead.append(_th("Trend · Δ", "th-trend", SORT_TREND, sort))
     ghead.append("</tr>")
     chead.append("</tr>")
 
@@ -677,7 +713,7 @@ def subject_table_html(subs, show_brand_sublabel: bool = False,
     def spark_key(r):
         return str(r["subj_key"])
 
-    return _table_html(groups, "SUBJECT", subs, name_cell, row_attrs, spark_key,
+    return _table_html(groups, "Subject", subs, name_cell, row_attrs, spark_key,
                        sparks, "Total (filtered)", "No subjects found.",
                        sort=sort, first_sort="subject_name")
 
@@ -686,19 +722,19 @@ def subject_table_html(subs, show_brand_sublabel: bool = False,
 # sorts by, so every column here is sortable on its real value — AGE sorts by
 # age_days (not "120d") and VALUATION by the float (not "$1,234").
 _ITEM_COLS = [
-    ("ITEM #", "item_number"),
-    ("DESCRIPTION", "item_description"),
-    ("TEAM", "team"),
-    ("TYPE", "relic_form_type"),
-    ("USED STATUS", "item_used_status"),
-    ("STATUS", "status"),
-    ("SUB-INV", "subinventory_code"),
-    ("BIN", "bin_location"),
-    ("PROGRAM", "program"),
-    ("AGE", "age_days"),
-    ("QTY", "qty_onhand"),
-    ("UNIT COST", "unit_cost"),
-    ("VALUATION", "valuation"),
+    ("Item #", "item_number"),
+    ("Description", "item_description"),
+    ("Team", "team"),
+    ("Type", "relic_form_type"),
+    ("Used status", "item_used_status"),
+    ("Status", "status"),
+    ("Sub-inv", "subinventory_code"),
+    ("Bin", "bin_location"),
+    ("Program", "program"),
+    ("Age", "age_days"),
+    ("Qty", "qty_onhand"),
+    ("Unit cost", "unit_cost"),
+    ("Valuation", "valuation"),
 ]
 # The numeric columns: these share one uniform width and center their cells. Text
 # columns keep content-based width (DESCRIPTION in particular must not be clipped
@@ -711,7 +747,7 @@ def item_table_html(items, sort=None) -> str:
     ncols = len(_ITEM_COLS)
     head = "<tr>" + "".join(
         _th(h, " ".join(c for c in (
-                "th-total" if h == "VALUATION" else "",
+                "th-total" if h == "Valuation" else "",
                 "c-num" if field in _ITEM_NUM_FIELDS else "") if c),
             field, sort)
         for h, field in _ITEM_COLS
