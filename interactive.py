@@ -63,7 +63,7 @@ export default function ({ data, setTriggerValue, parentElement }) {
 # what kept rendering table headers in UPPERCASE after text-transform was removed
 # (the per-render HTML was already correct; only the CSS was stale). Bump this
 # suffix whenever TABLE_CSS or _JS changes in a way that must reach clients.
-_renderer = st.components.v2.component("fct_table_v3", html=_SHELL_HTML,
+_renderer = st.components.v2.component("fct_table_v4", html=_SHELL_HTML,
                                        css=TABLE_CSS, js=_JS)
 
 

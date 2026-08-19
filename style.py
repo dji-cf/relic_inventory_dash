@@ -143,7 +143,7 @@ _CHROME_CSS = """
 .fct .hdr-top { display:flex; align-items:center; gap:18px; flex-wrap:wrap; }
 /* App title lockup. The 1px tracking here is deliberate branding on the title
    itself; the subtitle is distinguished by size and colour, not weight. */
-.fct .logo { font-size:24px; font-weight:700; letter-spacing:1px; color:#fff; line-height:1; }
+.fct .logo { font-size:24px; font-weight:400; letter-spacing:1px; color:#fff; line-height:1; }
 .fct .logo span { color:#7a99c0; font-size:15px; font-weight:400; letter-spacing:.2px; }
 /* wrap + row-gap so the 4th field (DATA PULLED) drops to a second line on a
    narrow viewport instead of overflowing the header card. */
@@ -245,7 +245,13 @@ TABLE_CSS = _BASE_CSS + """
 .fct thead th { background:#1a2b4a; padding:8px 10px; text-align:center; font-size:11px;
   font-weight:400; letter-spacing:.3px; color:#fff; white-space:nowrap; }
 .fct thead th:first-child { text-align:left; background:#000; }
-.fct .cg th { font-size:11px; font-weight:400; letter-spacing:.3px; padding:6px 10px;
+/* Group band header (◆ Whole / ◆ Non-whole / ◆ Cut sig). Deliberately matched to
+   the row-label cell (td:first-child, 13px/500 with normal tracking) so the two
+   things the eye uses to orient itself in the table -- the band it is under and
+   the row it is on -- are set identically. The extra top padding lifts the band
+   off the top edge of the table; it is the first row, so it has no neighbour
+   above to give it breathing room. */
+.fct .cg th { font-size:13px; font-weight:500; padding:16px 10px 7px;
   text-align:center; color:#fff; }
 .fct .cg th.th-whole { background:#1f3d6a; }
 .fct .cg th.th-nonwhole { background:#166534; }
@@ -478,7 +484,7 @@ def header_html(cards: dict, as_of_label: str, pulled_at: datetime | None = None
                  f'{escape(abs_txt)}">Data pulled<b>{escape(rel)}</b></div>')
     return (
         '<div class="hdr"><div class="hdr-top">'
-        '<div class="logo">FCT Relic <span>/ Inventory Dashboard</span></div>'
+        '<div class="logo">FCT Relic <span>- Inventory Dashboard</span></div>'
         '<div class="hdr-meta">'
         f'<div>As of<b>{escape(as_of_label)}</b></div>'
         f'{fresh}'
