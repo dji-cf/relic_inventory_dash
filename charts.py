@@ -4,11 +4,25 @@ from __future__ import annotations
 import altair as alt
 import pandas as pd
 
+from style import FONT
+
 WHOLE = "#4d7ab8"
 NONWHOLE = "#16a34a"
 CUTSIG = "#dc2626"
 ACCENT = "#4d7ab8"
 GOLD = "#b5822a"
+
+
+def _themed(chart):
+    """Apply the dashboard font to every text mark in a chart.
+
+    Vega-Lite defaults to its own sans-serif, which made the charts the odd one
+    out among the four rendering surfaces (see style.FONT). ``config.font`` sets
+    the default for axis labels, titles and legends in one place. Must be applied
+    to the TOP-LEVEL chart — configuring a layer's base and then combining raises
+    a Vega-Lite config error.
+    """
+    return chart.configure(font=FONT)
 
 _LINE_PALETTE = [
     "#4d7ab8", "#16a34a", "#dc2626", "#b5822a", "#7c3aed", "#0891b2",
@@ -28,7 +42,7 @@ def _cat_colors(cat_order):
 def value_mix_chart(labels, mix_rows):
     """mix_rows: list of dicts {snapshot, type, value} (long form)."""
     df = pd.DataFrame(mix_rows)
-    return (
+    return _themed(
         alt.Chart(df)
         .mark_bar()
         .encode(
@@ -57,7 +71,7 @@ def mom_heatmap(df, month_order, cat_order, metric_label, domain_cap):
     out the rest of the map. Row height is per-step so a 3-row STATUS map and a
     20-row SUBJECT map both size correctly.
     """
-    return (
+    return _themed(
         alt.Chart(df)
         .mark_rect(stroke="#ffffff", strokeWidth=1)
         .encode(
@@ -100,13 +114,13 @@ def trend_lines_chart(df, month_order, cat_order, axis_title, is_value=True):
             alt.Tooltip("value:Q", title="Value", format=",.0f"),
         ],
     )
-    return (base.mark_line(strokeWidth=2, opacity=0.9)
-            + base.mark_point(size=40, filled=True)).properties(height=320)
+    return _themed((base.mark_line(strokeWidth=2, opacity=0.9)
+                    + base.mark_point(size=40, filled=True)).properties(height=320))
 
 
 def age_profile_chart(df, bucket_order):
     """Stacked value by age bucket and status. df: [bucket, status, value]."""
-    return (
+    return _themed(
         alt.Chart(df)
         .mark_bar()
         .encode(

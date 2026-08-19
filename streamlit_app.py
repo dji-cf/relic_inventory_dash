@@ -31,17 +31,36 @@ with st.sidebar:  # fragment can't open st.sidebar itself; wrap the call here
 
 # ── view config ───────────────────────────────────────────────────────────────
 VIEWS = {
-    "BY BRAND / SPORT": dict(col="brand", label="BRAND / SPORT", view="BY BRAND / SPORT"),
-    "BY FORM TYPE":     dict(col="relic_form_type", label="FORM TYPE", view="BY FORM TYPE"),
-    "BY USED STATUS":   dict(col="item_used_status", label="USED STATUS", view="BY USED STATUS"),
-    "BY PROGRAM":       dict(col="program", label="PROGRAM", view="BY PROGRAM (SLATED)"),
-    "BY AGE":           dict(col="age_bucket", label="AGE BUCKET", view="BY AGE"),
+    "BY BRAND / SPORT": dict(col="brand", label="BRAND / SPORT", view="By brand / sport"),
+    "BY FORM TYPE":     dict(col="relic_form_type", label="TYPE", view="By type"),
+    "BY USED STATUS":   dict(col="item_used_status", label="USED STATUS", view="By used status"),
+    "BY PROGRAM":       dict(col="program", label="PROGRAM", view="By program (slated)"),
+    "BY AGE":           dict(col="age_bucket", label="AGE BUCKET", view="By age"),
 }
 STATUS_OPTS = {"ALL": "A", "UNSLATED": "U", "SLATED": "S", "OBSOLETE": "O"}
 COL_SETS = ["STANDARD", "+AGE", "STATUS + AGE"]
 TREND_DIMS = {"BRAND": "brand", "SUBJECT": "subj_key",
               "FORM TYPE": "relic_form_type", "STATUS": "status"}
 _STATUS_CODES = {v: k for k, v in tx.STATUS_LABELS.items()}
+
+# Control options stay UPPERCASE as VALUES — they are session-state values and are
+# compared directly (ss.view == "BY PROGRAM", STATUS_OPTS[...], _STATUS_CODES[...]).
+# This only softens how they are DISPLAYED, via format_func, so nothing
+# behavioural moves.
+#
+# Sentence case (not Title Case) because that is what Streamlit's own widget
+# labels use — "As-of date", "Rows per view" — so the controls sit consistently
+# beside them, and it matches the card/section labels in style.py. str.capitalize
+# handles the regular cases ("BY USED STATUS" -> "By used status"); the override
+# map carries what it cannot infer, including the "Form Type" -> "Type" rename and
+# the leading-symbol option "+AGE".
+_LABEL_OVERRIDES = {"BY FORM TYPE": "By type", "FORM TYPE": "Type", "+AGE": "+ Age"}
+
+
+def _label(opt) -> str:
+    """Display form of a control option (the option value itself is unchanged)."""
+    s = str(opt)
+    return _LABEL_OVERRIDES.get(s, s.capitalize())
 
 
 def month_label(d: str) -> str:
@@ -175,16 +194,21 @@ def _on_view_change():
 
 
 # ── top controls ────────────────────────────────────────────────────────────
-c1, c2, c3, c4 = st.columns([1.1, 2.6, 1.4, 0.4])
+# The Refresh column is sized generously and the button hugs its own label
+# (width="content"): at the old 0.4 ratio the label clipped once the assistant
+# sidebar claimed its width and the main area narrowed.
+c1, c2, c3, c4 = st.columns([1.1, 2.6, 1.4, 0.8], vertical_alignment="bottom")
 with c1:
     st.selectbox("As-of date", months, format_func=month_label, key="as_of")
 with c2:
-    st.segmented_control("View", list(VIEWS), key="view", on_change=_on_view_change)
+    st.segmented_control("View", list(VIEWS), key="view", format_func=_label,
+                         on_change=_on_view_change)
 with c3:
     st.segmented_control("Tab", ["INVENTORY", "TRENDS", "AGING"], key="tab",
-                         on_change=_sticky, args=("tab",))
+                         format_func=_label, on_change=_sticky, args=("tab",))
 with c4:
-    if st.button("↻ Refresh", help="Clear cached data and reload from Snowflake"):
+    if st.button("↻ Refresh", width="content",
+                 help="Clear cached data and reload from Snowflake"):
         st.cache_data.clear()
         st.rerun()
 
@@ -193,6 +217,7 @@ with c4:
 program_view = ss.view == "BY PROGRAM"
 aging_tab = ss.tab == "AGING"
 st.segmented_control("Status", list(STATUS_OPTS), key="status",
+                     format_func=_label,
                      disabled=program_view or aging_tab,
                      on_change=_sticky, args=("status",))
 status_code = "A" if aging_tab else STATUS_OPTS[ss.status]
@@ -214,7 +239,7 @@ with st.expander("Filters", expanded=False):
         if ss.get(_k) not in _opts:  # drop a selection that no longer exists this month
             ss[_k] = ""
     g_team = f1.selectbox("Team", teams, format_func=lambda x: x or "All Teams", key="g_team")
-    g_ft = f2.selectbox("Form Type", fts, format_func=lambda x: x or "All Form Types", key="g_ft")
+    g_ft = f2.selectbox("Type", fts, format_func=lambda x: x or "All Types", key="g_ft")
     g_us = f3.selectbox("Used Status", uss, format_func=lambda x: x or "All Used Status", key="g_us")
     g_brand = f4.selectbox("Brand", brands, format_func=lambda x: x or "All Brands", key="g_brand")
     g_subinv = f5.selectbox("Sub-Inventory", subinvs,
@@ -268,9 +293,10 @@ def render_inventory():
                       placeholder=f"Filter {cfg['label'].lower()}…",
                       label_visibility="collapsed")
     s2.segmented_control("Columns", COL_SETS, key="pivot_cols",
+                         format_func=_label,
                          on_change=_sticky, args=("pivot_cols",),
                          label_visibility="collapsed")
-    s3.toggle("15-MO TREND", key="show_sparks")
+    s3.toggle("15-mo trend", key="show_sparks")
     if q:
         roll = roll[roll[dim].astype(str).str.contains(q, case=False, na=False)]
 
@@ -352,14 +378,15 @@ def render_inventory():
 
     if status_code == "S":
         st.segmented_control("Subject drill", ["ITEMS", "BY PROGRAM"], key="drill_mode",
+                             format_func=_label,
                              on_change=_sticky, args=("drill_mode",))
 
     # union count + per-type counts (subjects with items in several types are in
     # each type's count but once in the union, so the parts can exceed the total)
     st.markdown(f"#### {sel} &nbsp; <span style='color:#6b7fa3;font-size:14px'>"
-                f"{len(subs)} subjects · {int(subs['ws'].sum())} whole / "
-                f"{int(subs['nws'].sum())} non-whole / "
-                f"{int(subs['css'].sum())} cut sig</span>", unsafe_allow_html=True)
+                f"{tx.fmtq(len(subs))} subjects · {tx.fmtq(subs['ws'].sum())} whole / "
+                f"{tx.fmtq(subs['nws'].sum())} non-whole / "
+                f"{tx.fmtq(subs['css'].sum())} cut sig</span>", unsafe_allow_html=True)
     sc1, sc2 = st.columns([4, 1])
     sq = sc1.text_input("Filter subjects", key="subj_search",
                         placeholder="Filter subjects…", label_visibility="collapsed")
@@ -430,7 +457,8 @@ def render_inventory():
         i1, i2, i3 = st.columns([3, 0.8, 1])
         n_items = items["item_number"].nunique()
         i1.markdown(f"#### {subj_v} &nbsp; <span style='color:#6b7fa3;font-size:14px'>"
-                    f"{n_items} items · {len(items)} rows</span>", unsafe_allow_html=True)
+                    f"{tx.fmtq(n_items)} items · {tx.fmtq(len(items))} rows</span>",
+                    unsafe_allow_html=True)
         iq = i1.text_input("Filter items", key="item_search",
                            placeholder="Filter by item #, bin, or sub-inv…",
                            label_visibility="collapsed")
@@ -454,7 +482,7 @@ def render_inventory():
             .rename(columns={
                 "item_number": "Item #", "item_description": "Description",
                 "subject": "Subject", "brand": "Brand",
-                "team": "Team", "relic_form_type": "Form Type",
+                "team": "Team", "relic_form_type": "Type",
                 "item_used_status": "Used Status",
                 "subinventory_code": "Sub-Inventory", "bin_location": "Bin Location",
                 "qty_onhand": "Qty On Hand",
@@ -478,8 +506,10 @@ def render_trends():
 
     t1, t2, t3 = st.columns([2.4, 1.2, 0.7])
     t1.segmented_control("Dimension", list(TREND_DIMS), key="trend_dim",
+                         format_func=_label,
                          on_change=_sticky, args=("trend_dim",))
     t2.segmented_control("Metric", ["VALUE", "QTY"], key="trend_metric",
+                         format_func=_label,
                          on_change=_sticky, args=("trend_metric",))
     t3.selectbox("Top N", [8, 12, 20], index=1, key="trend_topn")
 
@@ -528,7 +558,7 @@ def render_trends():
     folded = folded.copy()
     folded["mlabel"] = folded["month"].map(lbl)
 
-    st.html(style.open_fct() + '<div class="sec-title">MONTHLY MOVEMENT (MoM Δ — GREEN BUILDING / RED SHRINKING)</div>' + style.close_fct())
+    st.html(style.open_fct() + '<div class="sec-title">Monthly movement (MoM Δ — green building / red shrinking)</div>' + style.close_fct())
     mom = tx.mom_change(folded, "cat")
     if mom.empty:
         st.caption("Not enough history for month-over-month changes.")
@@ -537,12 +567,12 @@ def render_trends():
         st.altair_chart(charts.mom_heatmap(mom, month_lbls, cat_order,
                                            ss.trend_metric, cap))
 
-    st.html(style.open_fct() + f'<div class="sec-title">TOP {int(ss.get("trend_topn", 12))} TREND — {ss.trend_dim}</div>' + style.close_fct())
+    st.html(style.open_fct() + f'<div class="sec-title">Top {int(ss.get("trend_topn", 12))} trend — {_label(ss.trend_dim)}</div>' + style.close_fct())
     st.altair_chart(charts.trend_lines_chart(
         folded, month_lbls, cat_order,
         "Value ($)" if is_value else "Quantity", is_value))
 
-    st.html(style.open_fct() + f'<div class="sec-title">MOVERS — Δ vs {month_label(anchor)}</div>' + style.close_fct())
+    st.html(style.open_fct() + f'<div class="sec-title">Movers — Δ vs {month_label(anchor)}</div>' + style.close_fct())
     movers = tx.trailing_deltas(long, "cat", months, anchor)
     mc1, mc2 = st.columns([4, 1])
     mq = mc1.text_input("Filter categories", key="movers_search",
@@ -551,12 +581,13 @@ def render_trends():
     mv = movers
     if mq:
         mv = movers[movers["cat"].str.contains(mq, case=False, na=False)]
-    num = "$%.0f" if is_value else "%.0f"
+    # "," gives thousand separators (sprintf-js), so movers read $1,284,300
+    num = "$%,.0f" if is_value else "%,.0f"
     st.dataframe(
         mv, hide_index=True, width="stretch",
         height=_df_height(ss.movers_rows, len(mv)),
         column_config={
-            "cat": st.column_config.TextColumn(ss.trend_dim.title()),
+            "cat": st.column_config.TextColumn(_label(ss.trend_dim)),
             "current": st.column_config.NumberColumn(f"Current ({month_label(anchor)})", format=num),
             "d1": st.column_config.NumberColumn("Δ1 mo", format=num),
             "d3": st.column_config.NumberColumn("Δ3 mo", format=num),
@@ -570,7 +601,7 @@ def render_trends():
                        file_name=f"relic_trend_movers_{dim}_{ss.as_of}.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-    st.html(style.open_fct() + '<div class="sec-title">VALUE MIX (ALL MONTHS)</div>' + style.close_fct())
+    st.html(style.open_fct() + '<div class="sec-title">Value mix (all months)</div>' + style.close_fct())
     mix = (hist.groupby(["month", "itype"], observed=True)["valuation"]
            .sum().reset_index())
     mix["snapshot"] = mix["month"].astype(str).map(lbl)
@@ -592,7 +623,7 @@ def render_aging():
                "that date, and a receipt later in the as-of month counts as 0 days.")
     st.html(style.open_fct() + style.aging_cards_html(tx.aging_stats(df)) + style.close_fct())
 
-    st.html(style.open_fct() + '<div class="sec-title">AGE PROFILE — VALUE BY BUCKET AND STATUS</div>' + style.close_fct())
+    st.html(style.open_fct() + '<div class="sec-title">Age profile — value by bucket and status</div>' + style.close_fct())
     prof = (df.groupby(["age_bucket", "status"], dropna=False, observed=False)
             ["valuation"].sum().reset_index())
     prof["status"] = prof["status"].map(tx.STATUS_LABELS).fillna(prof["status"])
@@ -600,11 +631,12 @@ def render_aging():
     prof["bucket"] = prof["bucket"].astype(str)
     st.altair_chart(charts.age_profile_chart(prof, tx.AGE_LABELS))
 
-    st.html(style.open_fct() + '<div class="sec-title">STALE INVENTORY REPORT</div>' + style.close_fct())
+    st.html(style.open_fct() + '<div class="sec-title">Stale inventory report</div>' + style.close_fct())
     r1, r2, r3 = st.columns([2, 1.6, 0.9])
     thr = r1.slider("Stale threshold (days)", 90, 730, value=365, key="stale_days")
     r2.segmented_control("Report status", ["UNSLATED", "SLATED", "OBSOLETE", "ALL"],
-                         key="stale_status", on_change=_sticky, args=("stale_status",))
+                         key="stale_status", format_func=_label,
+                         on_change=_sticky, args=("stale_status",))
     _rows_select(r3, "stale_rows")
     st.caption("Defaults (365 days / unslated) are placeholders — the stale rule is "
                "TBD with the business and may differ by case.")
@@ -614,7 +646,7 @@ def render_aging():
     disp = (rep.assign(status=rep["status"].map(tx.STATUS_LABELS))
             .rename(columns={
                 "item_number": "Item #", "brand": "Brand", "subject_name": "Subject",
-                "team": "Team", "relic_form_type": "Form Type",
+                "team": "Team", "relic_form_type": "Type",
                 "item_used_status": "Used Status", "status": "Status",
                 "program": "Program", "age_days": "Age (days)",
                 "qty_onhand": "Qty", "valuation": "Valuation (USD)"}))
@@ -622,9 +654,9 @@ def render_aging():
         disp, hide_index=True, width="stretch",
         height=_df_height(ss.stale_rows, len(disp)),
         column_config={
-            "Age (days)": st.column_config.NumberColumn(format="%d"),
-            "Qty": st.column_config.NumberColumn(format="%.0f"),
-            "Valuation (USD)": st.column_config.NumberColumn(format="$%.0f"),
+            "Age (days)": st.column_config.NumberColumn(format="%,d"),
+            "Qty": st.column_config.NumberColumn(format="%,.0f"),
+            "Valuation (USD)": st.column_config.NumberColumn(format="$%,.0f"),
         },
     )
     st.download_button("⬇ Export stale report", to_excel(disp),

@@ -290,11 +290,11 @@ def rollup(df, dim) -> pd.DataFrame:
 
 
 def collapse_other(roll, dim, threshold=FT_OTHER_THRESHOLD):
-    """Fold rows below ``threshold`` total value into a single OTHER row (Form Type view).
+    """Fold rows below ``threshold`` total value into a single OTHER row (Type view).
 
     Value / qty / EXT_COLS are additive so the OTHER row is exact. The subject
     columns (ws / nws / css) are distinct counts and are only summed here — a
-    subject present in two folded form types is counted twice in the OTHER row.
+    subject present in two folded types is counted twice in the OTHER row.
     """
     if roll.empty:
         return roll
@@ -304,7 +304,7 @@ def collapse_other(roll, dim, threshold=FT_OTHER_THRESHOLD):
         return roll
     # every non-dim column is additive, so a plain sum keeps the OTHER row exact
     agg = {c: other[c].sum() for c in roll.columns if c != dim}
-    agg[dim] = f"OTHER ({len(other)} form types)"
+    agg[dim] = f"OTHER ({len(other)} types)"
     return pd.concat([main, pd.DataFrame([agg])], ignore_index=True)
 
 

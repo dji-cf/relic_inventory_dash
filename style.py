@@ -40,17 +40,31 @@ try:
 except Exception:  # any lookup failure means "no local zone" -> UTC-only tooltip
     _LOCAL_TZ = None
 
+# ONE font stack for every surface. The dashboard renders across four independent
+# surfaces — the .fct chrome, the shadow-DOM tables (TABLE_CSS), Streamlit's own
+# widgets/markdown/dataframes (theme font), and Altair chart text — and each used
+# to resolve its own family, which is what made the UI look like several fonts.
+#
+# The FALLBACK CHAIN matters as much as the family: Streamlit-in-Snowflake runs
+# under a Content Security Policy that restricts external resources, so the Inter
+# webfont requested by .streamlit/config.toml may not load in the deployed app.
+# Every surface therefore shares this exact stack, so if Inter is unavailable they
+# all degrade to the SAME system font instead of diverging.
+#
+# charts.py imports FONT for the Altair config; do not fork this list.
+FONT = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif"
+
 # Shared base (fonts + palette vars): needed in the page stylesheet for the
 # chrome AND inside each table component, because page styles can't pierce
 # the component's shadow root.
 _BASE_CSS = """
-.fct, .fct * { box-sizing: border-box; font-family: 'Inter', -apple-system, 'Segoe UI', Arial, sans-serif; }
+.fct, .fct * { box-sizing: border-box; font-family: __FONT__; }
 .fct {
   --surface:#fff; --surface2:#f8f9fc; --border:#e2e8f0; --accent:#4d7ab8;
   --whole:#4d7ab8; --nonwhole:#16a34a; --cutsig:#dc2626; --text:#1a2b4a;
   --muted:#6b7fa3; --gold:#b5822a;
 }
-"""
+""".replace("__FONT__", FONT)
 
 _CHROME_CSS = """
 /* HEADER */
@@ -74,7 +88,7 @@ _CHROME_CSS = """
 /* CONTEXT BAR */
 .fct .context-bar { display:flex; align-items:center; gap:10px; margin:0 0 14px; }
 .fct .context-status, .fct .context-view {
-  font-family:'DM Mono',monospace; font-size:12px; font-weight:700; letter-spacing:.8px;
+  font-size:12px; font-weight:700; letter-spacing:.8px;
   padding:4px 11px; border-radius:5px; color:#fff; }
 .fct .context-status { background:var(--gold); }
 .fct .context-status.status-U { background:var(--whole); }
@@ -91,7 +105,7 @@ _CHROME_CSS = """
 .fct .stat-card.total { border-top-color:var(--gold); background:#fffbf0; }
 .fct .stat-card.nonwhole { border-top-color:var(--nonwhole); }
 .fct .stat-card.cutsig { border-top-color:var(--cutsig); }
-.fct .stat-card .lbl { font-size:10px; font-weight:700; text-transform:uppercase;
+.fct .stat-card .lbl { font-size:10px; font-weight:700;
   letter-spacing:.7px; color:var(--muted); margin-bottom:6px; }
 .fct .stat-card .val { font-size:26px; font-weight:700; line-height:1.1; letter-spacing:-.5px;
   font-variant-numeric:tabular-nums; }
@@ -100,11 +114,11 @@ _CHROME_CSS = """
 /* LEGEND */
 .fct .legend { display:flex; gap:20px; flex-wrap:wrap; margin-bottom:14px; }
 .fct .legend-item { display:flex; align-items:center; gap:8px; font-size:12px;
-  color:var(--muted); font-family:'DM Mono',monospace; }
+  color:var(--muted); }
 .fct .legend-dot { width:10px; height:10px; border-radius:2px; }
 
 /* TREND TITLES */
-.fct .sec-title { font-size:12px; font-weight:700; letter-spacing:1px; text-transform:uppercase;
+.fct .sec-title { font-size:12px; font-weight:700; letter-spacing:1px;
   color:var(--muted); margin:8px 0 12px; display:flex; align-items:center; gap:10px; }
 .fct .sec-title::after { content:''; flex:1; height:1px; background:var(--border); }
 
@@ -127,10 +141,10 @@ TABLE_CSS = _BASE_CSS + """
 .fct .table-wrap { background:var(--surface); border-radius:8px; overflow-x:auto;
   box-shadow:0 1px 4px rgba(0,0,0,.08); margin-bottom:8px; }
 .fct table { width:100%; border-collapse:collapse; }
-.fct thead th { background:#1a2b4a; padding:8px 12px; text-align:right; font-size:10px;
+.fct thead th { background:#1a2b4a; padding:8px 10px; text-align:center; font-size:10px;
   font-weight:700; letter-spacing:.4px; text-transform:uppercase; color:#fff; white-space:nowrap; }
 .fct thead th:first-child { text-align:left; background:#000; }
-.fct .cg th { font-size:10px; font-weight:800; padding:6px 12px; text-align:center; color:#fff; }
+.fct .cg th { font-size:10px; font-weight:800; padding:6px 10px; text-align:center; color:#fff; }
 .fct .cg th.th-whole { background:#1f3d6a; }
 .fct .cg th.th-nonwhole { background:#166534; }
 .fct .cg th.th-cutsig { background:#7f1d1d; }
@@ -141,10 +155,38 @@ TABLE_CSS = _BASE_CSS + """
 .fct th.th-cutsig { background:#7f1d1d; }
 .fct th.th-total, .fct td.td-total { }
 .fct thead th.th-total { background:var(--gold); color:#fff; }
-.fct td { padding:9px 12px; text-align:right; font-size:12px; font-variant-numeric:tabular-nums;
+.fct td { padding:9px 10px; text-align:center; font-size:12px; font-variant-numeric:tabular-nums;
   border-bottom:1px solid var(--border); color:var(--text); white-space:nowrap; }
-.fct td:first-child { text-align:left; font-size:13px; font-weight:500; max-width:340px;
+.fct td:first-child { text-align:left; font-size:13px; font-weight:500;
   overflow:hidden; text-overflow:ellipsis; }
+
+/* UNIFORM DATA-COLUMN WIDTH.
+   Every data column is the same width with its content centered in header AND
+   cell (the centering is on the shared th/td rules above; the leading name
+   column opts back out to left, since it is the row label).
+
+   table-layout:fixed is what makes the widths EXACT. Under the default `auto`
+   layout a column always grows to fit its content, so a `width` is only a hint
+   and columns drift apart by content — which is the inconsistency being fixed.
+   Fixed layout applies ONLY to .t-grid (pivot / subject / program); the item
+   table needs content-based sizing for its long DESCRIPTION and stays on auto.
+
+   The widths live on <colgroup><col> rather than th/td because under fixed
+   layout the browser derives column widths from the FIRST ROW, and that row here
+   is the grouped colour-band header full of colspans, which would compute
+   unpredictably. Explicit <col> elements are authoritative and colspan-proof.
+
+   col-data is sized for the widest value a cell must hold (money like
+   "$1,284,300") rather than the widest column as currently rendered, because a
+   uniform width multiplies across up to 15 columns and widens the whole grid. */
+.fct .t-grid { table-layout:fixed; }
+.fct .t-grid col.col-name { width:260px; }
+.fct .t-grid col.col-data { width:104px; }
+
+/* Item table: auto layout so text columns still size to content, but its four
+   numeric columns share one width and every header centers like .t-grid. */
+.fct .t-item { table-layout:auto; }
+.fct .t-item th.c-num, .fct .t-item td.c-num { width:104px; min-width:104px; text-align:center; }
 .fct tbody tr:hover { background:var(--surface2); }
 .fct .td-whole { color:var(--whole); }
 .fct .td-nonwhole { color:var(--nonwhole); }
@@ -236,10 +278,25 @@ TABLE_CSS = _BASE_CSS + """
 # the dashboard reclaim the space; a blanket min-width leaves an empty gap on
 # collapse. Global (not .fct-scoped).
 _SIDEBAR_CSS = """
-[data-testid="stSidebar"][aria-expanded="true"] { min-width: 360px; max-width: 420px; }
+[data-testid="stSidebar"][aria-expanded="true"] { min-width: 340px; max-width: 420px; }
 """
 
-CSS = "<style>" + _BASE_CSS + _CHROME_CSS + _SIDEBAR_CSS + "</style>"
+# Force Streamlit's OWN chrome (widgets, markdown, metrics, dataframes) onto the
+# same stack as .fct and the charts. The theme in .streamlit/config.toml already
+# asks for Inter, but it resolves its own fallbacks — so if the Inter webfont is
+# blocked by the Streamlit-in-Snowflake CSP the widgets would land on a different
+# system font than the tables. Restating the full stack here keeps all four
+# surfaces identical in both the loaded and the blocked case.
+_APP_FONT_CSS = """
+[data-testid="stAppViewContainer"], [data-testid="stSidebar"],
+[data-testid="stAppViewContainer"] button, [data-testid="stSidebar"] button,
+[data-testid="stAppViewContainer"] input, [data-testid="stAppViewContainer"] select,
+[data-testid="stAppViewContainer"] textarea {
+  font-family: __FONT__;
+}
+""".replace("__FONT__", FONT)
+
+CSS = "<style>" + _BASE_CSS + _CHROME_CSS + _SIDEBAR_CSS + _APP_FONT_CSS + "</style>"
 
 
 def inject_css():
@@ -316,25 +373,25 @@ def header_html(cards: dict, as_of_label: str, pulled_at: datetime | None = None
     if pulled_at is not None:
         rel, abs_txt = freshness_label(pulled_at)
         fresh = (f'<div class="fresh" title="Last query against Snowflake: '
-                 f'{escape(abs_txt)}">DATA PULLED<b>{escape(rel)}</b></div>')
+                 f'{escape(abs_txt)}">Data pulled<b>{escape(rel)}</b></div>')
     return (
         '<div class="hdr"><div class="hdr-top">'
         '<div class="logo">FCT Relic <span>/ Inventory Dashboard</span></div>'
         '<div class="hdr-meta">'
-        f'<div>AS OF<b>{escape(as_of_label)}</b></div>'
+        f'<div>As of<b>{escape(as_of_label)}</b></div>'
         f'{fresh}'
-        f'<div>BRANDS<b>{cards["brands"]}</b></div>'
-        f'<div>TOTAL VALUE<b>{fmt2(cards["total_val"])}</b></div>'
+        f'<div>Brands<b>{fmtq(cards["brands"])}</b></div>'
+        f'<div>Total value<b>{fmt2(cards["total_val"])}</b></div>'
         "</div></div></div>"
     )
 
 
 def context_bar_html(status: str, view_label: str) -> str:
-    labels = {"A": "ALL INVENTORY", "U": "UNSLATED", "S": "SLATED", "O": "OBSOLETE"}
+    labels = {"A": "All inventory", "U": "Unslated", "S": "Slated", "O": "Obsolete"}
     scls = "" if status == "A" else f" status-{status}"
     return (
         '<div class="context-bar">'
-        f'<span class="context-status{scls}">{labels.get(status, "ALL INVENTORY")}</span>'
+        f'<span class="context-status{scls}">{labels.get(status, "All inventory")}</span>'
         '<span class="context-sep">·</span>'
         f'<span class="context-view">{escape(view_label)}</span>'
         "</div>"
@@ -344,9 +401,9 @@ def context_bar_html(status: str, view_label: str) -> str:
 def legend_html() -> str:
     return (
         '<div class="legend">'
-        '<div class="legend-item"><div class="legend-dot" style="background:var(--whole)"></div>WHOLE (MEM prefix)</div>'
-        '<div class="legend-item"><div class="legend-dot" style="background:var(--nonwhole)"></div>NON-WHOLE (other)</div>'
-        '<div class="legend-item"><div class="legend-dot" style="background:var(--cutsig)"></div>CUT SIG (form type)</div>'
+        '<div class="legend-item"><div class="legend-dot" style="background:var(--whole)"></div>Whole (MEM prefix)</div>'
+        '<div class="legend-item"><div class="legend-dot" style="background:var(--nonwhole)"></div>Non-whole (other)</div>'
+        '<div class="legend-item"><div class="legend-dot" style="background:var(--cutsig)"></div>Cut sig (type)</div>'
         "</div>"
     )
 
@@ -354,16 +411,16 @@ def legend_html() -> str:
 def stat_cards_html(c: dict) -> str:
     return (
         '<div class="stat-cards">'
-        '<div class="stat-card total"><div class="lbl">TOTAL INVENTORY VALUE</div>'
+        '<div class="stat-card total"><div class="lbl">Total inventory value</div>'
         f'<div class="val" style="color:var(--gold)">{fmt2(c["total_val"])}</div>'
-        f'<div class="sub">{c["brands"]} brands &nbsp;·&nbsp; {fmtq(c["total_subj"])} subjects</div></div>'
-        '<div class="stat-card"><div class="lbl">◆ WHOLE VALUE</div>'
+        f'<div class="sub">{fmtq(c["brands"])} brands &nbsp;·&nbsp; {fmtq(c["total_subj"])} subjects</div></div>'
+        '<div class="stat-card"><div class="lbl">◆ Whole value</div>'
         f'<div class="val" style="color:var(--whole)">{fmt2(c["whole_val"])}</div>'
         f'<div class="sub">{fmtq(c["whole_items"])} distinct items &nbsp;·&nbsp; {fmtq(c["whole_subj"])} subjects</div></div>'
-        '<div class="stat-card nonwhole"><div class="lbl">◆ NON-WHOLE VALUE</div>'
+        '<div class="stat-card nonwhole"><div class="lbl">◆ Non-whole value</div>'
         f'<div class="val" style="color:var(--nonwhole)">{fmt2(c["nonwhole_val"])}</div>'
         f'<div class="sub">{fmtq(c["nonwhole_items"])} distinct items &nbsp;·&nbsp; {fmtq(c["nonwhole_subj"])} subjects</div></div>'
-        '<div class="stat-card cutsig"><div class="lbl">◆ CUT SIG VALUE</div>'
+        '<div class="stat-card cutsig"><div class="lbl">◆ Cut sig value</div>'
         f'<div class="val" style="color:var(--cutsig)">{fmt2(c["cutsig_val"])}</div>'
         f'<div class="sub">{fmtq(c["cutsig_items"])} distinct items &nbsp;·&nbsp; {fmtq(c["cutsig_subj"])} subjects</div></div>'
         "</div>"
@@ -377,16 +434,16 @@ def aging_cards_html(a: dict) -> str:
     share = (a["total_12"] / a["total_val"] * 100.0) if a.get("total_val") else 0.0
     return (
         '<div class="stat-cards">'
-        '<div class="stat-card total"><div class="lbl">VALUE >1YR</div>'
+        '<div class="stat-card total"><div class="lbl">Value &gt;1yr</div>'
         f'<div class="val" style="color:var(--gold)">{fmt(a["total_12"])}</div>'
         f'<div class="sub">{share:.0f}% of filtered value</div></div>'
-        '<div class="stat-card"><div class="lbl">VALUE-WEIGHTED AVG AGE</div>'
+        '<div class="stat-card"><div class="lbl">Value-weighted avg age</div>'
         f'<div class="val" style="color:var(--accent)">{avg}</div>'
         '<div class="sub">age is a lower bound (see note)</div></div>'
-        '<div class="stat-card cutsig"><div class="lbl">UNSLATED VALUE >1YR</div>'
+        '<div class="stat-card cutsig"><div class="lbl">Unslated value &gt;1yr</div>'
         f'<div class="val" style="color:var(--cutsig)">{pct}</div>'
         '<div class="sub">share of unslated value</div></div>'
-        '<div class="stat-card nonwhole"><div class="lbl">ITEMS >1YR</div>'
+        '<div class="stat-card nonwhole"><div class="lbl">Items &gt;1yr</div>'
         f'<div class="val" style="color:var(--nonwhole)">{fmtq(a["items_12"])}</div>'
         '<div class="sub">distinct item numbers</div></div>'
         "</div>"
@@ -518,6 +575,11 @@ def _table_html(groups, first_header, frame, name_cell, row_attrs, spark_key,
     ``first_sort`` is the sort key for the leading name column.
     """
     has_trend = sparks is not None
+    ncols = 1 + sum(len(g[2]) for g in groups) + (1 if has_trend else 0)
+    # Authoritative widths for table-layout:fixed — see the .t-grid CSS for why
+    # these live on <col> and not on the header cells.
+    colgroup = ('<colgroup><col class="col-name">'
+                + '<col class="col-data">' * (ncols - 1) + "</colgroup>")
     ghead = ['<tr class="cg"><th></th>']
     # Only this second header row is clickable: the .cg band row spans groups.
     chead = ["<tr>" + _th(first_header, "", first_sort, sort)]
@@ -531,7 +593,6 @@ def _table_html(groups, first_header, frame, name_cell, row_attrs, spark_key,
     ghead.append("</tr>")
     chead.append("</tr>")
 
-    ncols = 1 + sum(len(g[2]) for g in groups) + (1 if has_trend else 0)
     body = []
     for _, r in frame.iterrows():
         cells = [f"<td>{name_cell(r)}</td>"]
@@ -557,7 +618,8 @@ def _table_html(groups, first_header, frame, name_cell, row_attrs, spark_key,
         fcells.append("<td></td>")
     foot = '<tr class="tfoot-row">' + "".join(fcells) + "</tr>"
 
-    return ('<div class="table-wrap"><table><thead>' + "".join(ghead) + "".join(chead)
+    return ('<div class="table-wrap"><table class="t-grid">' + colgroup
+            + "<thead>" + "".join(ghead) + "".join(chead)
             + "</thead><tbody>" + "".join(body) + "</tbody><tfoot>" + foot
             + "</tfoot></table></div>")
 
@@ -590,7 +652,7 @@ def pivot_table_html(roll, dim_col: str, dim_label: str,
         return str(r[dim_col])
 
     return _table_html(groups, dim_label, roll, name_cell, row_attrs, spark_key,
-                       sparks, "TOTAL", "No rows match your filter.",
+                       sparks, "Total", "No rows match your filter.",
                        totals_override=totals_override,
                        sort=sort, first_sort=dim_col)
 
@@ -616,7 +678,7 @@ def subject_table_html(subs, show_brand_sublabel: bool = False,
         return str(r["subj_key"])
 
     return _table_html(groups, "SUBJECT", subs, name_cell, row_attrs, spark_key,
-                       sparks, "TOTAL (filtered)", "No subjects found.",
+                       sparks, "Total (filtered)", "No subjects found.",
                        sort=sort, first_sort="subject_name")
 
 
@@ -627,7 +689,7 @@ _ITEM_COLS = [
     ("ITEM #", "item_number"),
     ("DESCRIPTION", "item_description"),
     ("TEAM", "team"),
-    ("FORM TYPE", "relic_form_type"),
+    ("TYPE", "relic_form_type"),
     ("USED STATUS", "item_used_status"),
     ("STATUS", "status"),
     ("SUB-INV", "subinventory_code"),
@@ -638,13 +700,20 @@ _ITEM_COLS = [
     ("UNIT COST", "unit_cost"),
     ("VALUATION", "valuation"),
 ]
+# The numeric columns: these share one uniform width and center their cells. Text
+# columns keep content-based width (DESCRIPTION in particular must not be clipped
+# — see .td-desc) but their HEADERS still center, like every other table.
+_ITEM_NUM_FIELDS = {"age_days", "qty_onhand", "unit_cost", "valuation"}
 
 
 def item_table_html(items, sort=None) -> str:
     """Item × status × sub-inventory × bin grain detail table (one row per bin)."""
     ncols = len(_ITEM_COLS)
     head = "<tr>" + "".join(
-        _th(h, "th-total" if h == "VALUATION" else "", field, sort)
+        _th(h, " ".join(c for c in (
+                "th-total" if h == "VALUATION" else "",
+                "c-num" if field in _ITEM_NUM_FIELDS else "") if c),
+            field, sort)
         for h, field in _ITEM_COLS
     ) + "</tr>"
     rows = []
@@ -670,20 +739,21 @@ def item_table_html(items, sort=None) -> str:
             f'<td style="text-align:left">{escape(subinv_txt)}</td>'
             f'<td class="td-desc" title="{escape(bin_txt)}">{escape(bin_txt)}</td>'
             f'<td style="text-align:left">{escape(str(r["program"]))}</td>'
-            f"<td>{age_txt}</td>"
-            f'<td>{fmtq(r["qty_onhand"])}</td>'
-            f'<td>${r["unit_cost"]:,.2f}</td>'
-            f'<td class="td-total">{fmt(r["valuation"])}</td></tr>'
+            f'<td class="c-num">{age_txt}</td>'
+            f'<td class="c-num">{fmtq(r["qty_onhand"])}</td>'
+            f'<td class="c-num">${r["unit_cost"]:,.2f}</td>'
+            f'<td class="c-num td-total">{fmt(r["valuation"])}</td></tr>'
         )
     tq = items["qty_onhand"].sum()
     tv = items["valuation"].sum()
     foot = (
-        f'<tr class="tfoot-row"><td colspan="{ncols - 3}">TOTAL (filtered)</td>'
-        f'<td>{fmtq(tq)}</td><td></td><td class="td-total">{fmt(tv)}</td></tr>'
+        f'<tr class="tfoot-row"><td colspan="{ncols - 3}">Total (filtered)</td>'
+        f'<td class="c-num">{fmtq(tq)}</td><td class="c-num"></td>'
+        f'<td class="c-num td-total">{fmt(tv)}</td></tr>'
     )
     body = "".join(rows) or (
         f'<tr><td colspan="{ncols}" style="text-align:center;color:var(--muted);'
         'padding:30px">No items found.</td></tr>'
     )
-    return ('<div class="table-wrap"><table><thead>' + head
+    return ('<div class="table-wrap"><table class="t-item"><thead>' + head
             + "</thead><tbody>" + body + "</tbody><tfoot>" + foot + "</tfoot></table></div>")
