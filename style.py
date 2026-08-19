@@ -24,6 +24,76 @@ import streamlit as st
 from transforms import (EXT_COLS, ROLLUP_COLS, SORT_AVG_AGE, SORT_PCT12,
                         SORT_TREND, STATUS_LABELS, fmt, fmt2, fmtq)
 
+# ---------------------------------------------------------------- label casing
+# Brand values are stored in Oracle in ALL CAPS and are case-folded to a single
+# canonical UPPER form in queries.py, so the only place they can be made readable
+# is at render time. This is DISPLAY-ONLY: drill data-keys, filter values, the
+# session-state selections and the Excel export all keep the canonical value, so
+# nothing that compares or round-trips a brand is affected by what you see here.
+#
+# str.title() is unusable for this data -- it would render MLB as "Mlb", UFC as
+# "Ufc" and NCAA as "Ncaa". Tokens are therefore checked against an acronym
+# allowlist first, and any token that already carries lowercase is left untouched
+# so hand-cased names ("SpongeBob") survive a round trip unchanged.
+_ACRONYMS = {
+    "MLB", "MLS", "NFL", "NBA", "WNBA", "NHL", "NCAA", "UFC", "WWE", "AEW",
+    "UEFA", "EPL", "NASCAR", "PGA", "LPGA", "ATP", "WTA", "MMA", "XFL", "CFL",
+    "AFL", "NRL", "IPL", "NPB", "KBO", "OTE", "NIL", "F1", "USA", "AAA", "II",
+    "III", "IV", "TV", "&", "-",
+    # short internal brand codes that are not words
+    "CHP", "DIS", "GPK", "MCD", "MRV", "STW", "TEN", "TWD", "VFR",
+}
+
+# Names whose correct casing is not derivable by rule.
+_CASE_OVERRIDES = {"MCDONALDS": "McDonalds", "SPONGEBOB": "SpongeBob"}
+
+
+def _cap_word(w: str) -> str:
+    """Capitalise a single word, respecting internal hyphens and apostrophes.
+
+    Splits on ' and - so "O'NEAL" becomes "O'Neal" and "ALL-STAR" becomes
+    "All-Star". A one-letter tail after an apostrophe stays lowercase, which is
+    what keeps possessives readable ("MEN'S" -> "Men's", not "Men'S").
+    """
+    out = w.lower()
+    for sep in ("'", "-"):
+        parts = out.split(sep)
+        out = sep.join(p if i and len(p) == 1 else p[:1].upper() + p[1:]
+                       for i, p in enumerate(parts))
+    return out
+
+
+def title_case(value) -> str:
+    """Render an ALL-CAPS stored label as readable title case.
+
+    Idempotent and safe on already-cased input, so it can be applied at any
+    render site without having to know whether the value came from Oracle raw or
+    from a previously formatted string.
+    """
+    s = str(value)
+    words = []
+    for tok in s.split():
+        core = tok.strip(".,()[]/")
+        pad = (tok[:len(tok) - len(tok.lstrip(".,()[]/"))],
+               tok[len(tok.rstrip(".,()[]/")):])
+        key = core.upper()
+        if key in _CASE_OVERRIDES:
+            core = _CASE_OVERRIDES[key]
+        elif key in _ACRONYMS or not core:
+            core = core.upper() if core else core
+        elif any(c.islower() for c in core):
+            pass                      # already hand-cased -- leave it alone
+        else:
+            core = _cap_word(core)
+        words.append(pad[0] + core + pad[1])
+    return " ".join(words)
+
+
+# Frame columns whose values are rendered through title_case(). Brand is the only
+# approved one today; adding "team" or "relic_form_type" here is all it would take
+# to extend the same treatment, since every render site consults this set.
+_TITLECASE_COLS = {"brand"}
+
 # Freshness tooltips read best in the reader's own wall-clock time. The zone is
 # PINNED rather than taken from the host clock: the SiS container runs in UTC, so
 # a host-derived zone would silently differ between local dev and deployed. Set
@@ -680,7 +750,10 @@ def pivot_table_html(roll, dim_col: str, dim_label: str,
     groups = _col_groups(col_set, three_stats=True)
 
     def name_cell(r):
-        return f'<div>{escape(str(r[dim_col]))}</div>{_bar(r["wv"], r["nwv"], r["csv"])}'
+        # display-only casing; row_attrs below still keys off the raw value
+        shown = (title_case(r[dim_col]) if dim_col in _TITLECASE_COLS
+                 else str(r[dim_col]))
+        return f'<div>{escape(shown)}</div>{_bar(r["wv"], r["nwv"], r["csv"])}'
 
     def row_attrs(r):
         val = str(r[dim_col])
@@ -706,7 +779,8 @@ def subject_table_html(subs, show_brand_sublabel: bool = False,
     def name_cell(r):
         name = escape(str(r["subject_name"]))
         if show_brand_sublabel:
-            name = f'<div>{name}</div><div class="sub-label">{escape(str(r["brand"]))}</div>'
+            brand = escape(title_case(r["brand"]))
+            name = f'<div>{name}</div><div class="sub-label">{brand}</div>'
         return name
 
     def row_attrs(r):

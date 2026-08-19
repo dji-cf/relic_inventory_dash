@@ -63,6 +63,31 @@ def _label(opt) -> str:
     return _LABEL_OVERRIDES.get(s, s.capitalize())
 
 
+def _brand_opt(opt) -> str:
+    """Display casing for a selector option whose value is a brand.
+
+    Brands are stored (and grouped) in caps, so every selector that lists them
+    needs the same title-casing the tables use -- otherwise the row reads "Major
+    League Baseball" while the dropdown under it still shouts. The option VALUE is
+    untouched, so drill state and filtering keep comparing canonical values.
+    """
+    s = str(opt)
+    return s if s in ("\u2014", "") else style.title_case(s)
+
+
+def _subj_opt(opt) -> str:
+    """Display casing for a "BRAND \u2014 SUBJECT" drill option.
+
+    Only the brand half is recased; subject names are already stored mixed-case.
+    The value still round-trips through ``split(" \u2014 ", 1)`` unchanged.
+    """
+    s = str(opt)
+    if " \u2014 " not in s:
+        return s
+    brand, subject = s.split(" \u2014 ", 1)
+    return f"{style.title_case(brand)} \u2014 {subject}"
+
+
 def month_label(d: str) -> str:
     return datetime.strptime(d, "%Y-%m-%d").strftime("%b %Y")
 
@@ -241,7 +266,9 @@ with st.expander("Filters", expanded=False):
     g_team = f1.selectbox("Team", teams, format_func=lambda x: x or "All Teams", key="g_team")
     g_ft = f2.selectbox("Type", fts, format_func=lambda x: x or "All Types", key="g_ft")
     g_us = f3.selectbox("Used Status", uss, format_func=lambda x: x or "All Used Status", key="g_us")
-    g_brand = f4.selectbox("Brand", brands, format_func=lambda x: x or "All Brands", key="g_brand")
+    g_brand = f4.selectbox("Brand", brands,
+                           format_func=lambda x: style.title_case(x) if x else "All Brands",
+                           key="g_brand")
     g_subinv = f5.selectbox("Sub-Inventory", subinvs,
                             format_func=lambda x: x or "All Sub-Inventories", key="g_subinv")
 
@@ -364,7 +391,8 @@ def render_inventory():
         _reset_drill()
         st.rerun()
 
-    sel = st.selectbox(f"Drill into {cfg['label'].lower()}", options, key="drill_dim")
+    sel = st.selectbox(f"Drill into {cfg['label'].lower()}", options, key="drill_dim",
+                       format_func=_brand_opt if dim == "brand" else str)
     scroll_subjects = sel != "—" and sel != ss.get("_prev_drill_dim")
     if sel != ss.get("_prev_drill_dim"):
         ss["_prev_drill_dim"] = sel
@@ -384,7 +412,7 @@ def render_inventory():
     # union count + per-type counts (subjects with items in several types are in
     # each type's count but once in the union, so the parts can exceed the total)
     st.html(style.open_fct() + style.panel_title_html(
-        str(sel),
+        _brand_opt(sel) if dim == "brand" else str(sel),
         f"{tx.fmtq(len(subs))} subjects · {tx.fmtq(subs['ws'].sum())} whole / "
         f"{tx.fmtq(subs['nws'].sum())} non-whole / "
         f"{tx.fmtq(subs['css'].sum())} cut sig") + style.close_fct())
@@ -427,7 +455,8 @@ def render_inventory():
         ss["drill_subj"] = "—" if subj_clicked == subj_current else subj_clicked
         st.rerun()
 
-    subj_sel = st.selectbox("Drill into subject", subj_opts, key="drill_subj")
+    subj_sel = st.selectbox("Drill into subject", subj_opts, key="drill_subj",
+                            format_func=_subj_opt)
     scroll_items = subj_sel != "—" and subj_sel != ss.get("_prev_drill_subj")
     ss["_prev_drill_subj"] = subj_sel
     if subj_sel == "—":
@@ -535,7 +564,13 @@ def render_trends():
     if status_dim:
         long[dim] = long[dim].map(tx.STATUS_LABELS).fillna(long[dim])
     elif dim == "subj_key":
-        long[dim] = long[dim].str.replace(" ||| ", " — ", regex=False)
+        long[dim] = (long[dim].str.replace(" ||| ", " — ", regex=False)
+                     .map(_subj_opt))
+    elif dim == "brand":
+        # chart legend/axis/tooltip and the movers table are all terminal display
+        # surfaces here (the movers search is case-insensitive), so recasing the
+        # category cannot break a lookup
+        long[dim] = long[dim].map(_brand_opt)
     long = long.rename(columns={dim: "cat"})
 
     lbl = {m: month_label(m) for m in months}

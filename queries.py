@@ -139,7 +139,15 @@ SELECT
     COALESCE(NULLIF(TRIM(b.ITEM_NUMBER), ''), 'OTHER')             AS item_number,
     a.item_description                                             AS item_description,
     COALESCE(NULLIF(TRIM(b.SUBJECT_NAME), ''), 'OTHER')           AS subject_name,
-    COALESCE(NULLIF(TRIM(b.BRAND), ''), 'OTHER')                  AS brand,
+    -- BRAND is UPPER()ed for the same reason TEAM and RELIC_FORM_TYPE are: Oracle
+    -- stores the same brand in two casings ('MAJOR LEAGUE BASEBALL' and 'Major
+    -- League Baseball' are both present, across ~45k items for MLB alone). Grouping
+    -- on the raw value split every one of those 14 brands into two sibling rows that
+    -- each held half the inventory. Case-folding here merges them; style.title_case
+    -- makes the result readable again at render time. Note this deliberately does
+    -- NOT merge genuine misspellings -- 'NATIONAL BASKETBALL ASSOICATION' stays its
+    -- own row, which is what makes bad data visible instead of silently absorbed.
+    UPPER(COALESCE(NULLIF(TRIM(b.BRAND), ''), 'OTHER'))           AS brand,
     UPPER(COALESCE(NULLIF(TRIM(b.TEAM), ''), ''))                   AS team,
     UPPER(COALESCE(NULLIF(TRIM(b.RELIC_FORM_TYPE), ''), 'OTHER')) AS relic_form_type,
     UPPER(COALESCE(NULLIF(TRIM(b.ITEM_USED_STATUS), ''), ''))       AS item_used_status,
@@ -265,7 +273,10 @@ SELECT
     b.month_start                                                  AS month,
     COALESCE(NULLIF(TRIM(b.ITEM_NUMBER), ''), 'OTHER')           AS item_number,
     COALESCE(NULLIF(TRIM(b.SUBJECT_NAME), ''), 'OTHER')          AS subject_name,
-    COALESCE(NULLIF(TRIM(b.BRAND), ''), 'OTHER')                 AS brand,
+    -- must match the on-hand projection's UPPER() exactly: subj_key is built as
+    -- brand + subject in data.py for BOTH frames, and the trend sparklines join
+    -- on it. Leaving history mixed-case would silently halve every brand's trend.
+    UPPER(COALESCE(NULLIF(TRIM(b.BRAND), ''), 'OTHER'))           AS brand,
     UPPER(COALESCE(NULLIF(TRIM(b.TEAM), ''), ''))                  AS team,
     UPPER(COALESCE(NULLIF(TRIM(b.RELIC_FORM_TYPE), ''), 'OTHER')) AS relic_form_type,
     UPPER(COALESCE(NULLIF(TRIM(b.ITEM_USED_STATUS), ''), ''))      AS item_used_status,
