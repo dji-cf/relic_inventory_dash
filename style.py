@@ -672,15 +672,22 @@ def _th(header: str, css: str, sort_key: str | None, sort) -> str:
 def _col_groups(col_set: str, three_stats: bool):
     """Column groups for a col_set. "TYPES" is the legacy 11-column layout
     (kept for the nested program table); STANDARD adds SLATED/UNSLATED;
-    +AGE adds the age ratios; STATUS + AGE drops the type groups entirely."""
+    +AGE adds the age ratios; STATUS + AGE drops the type groups entirely.
+
+    TOTAL VALUE is appended LAST in every layout. It is the grand total of the
+    row, so it reads as the figure the other columns build up to; parking it
+    mid-table (before STATUS) made it look like a subtotal of the type groups
+    only. Every consumer -- band row, header row, body, footer -- iterates these
+    groups in order, so position is decided here and nowhere else.
+    """
     if col_set == "STATUS + AGE":
-        return [_TOTAL_GROUP, _STATUS_GROUP, _AGE_GROUP]
-    groups = _type_groups(three_stats) + [_TOTAL_GROUP]
+        return [_STATUS_GROUP, _AGE_GROUP, _TOTAL_GROUP]
+    groups = _type_groups(three_stats)
     if col_set in ("STANDARD", "+AGE"):
         groups = groups + [_STATUS_GROUP]
     if col_set == "+AGE":
         groups = groups + [_AGE_GROUP]
-    return groups
+    return groups + [_TOTAL_GROUP]
 
 
 def _table_html(groups, first_header, frame, name_cell, row_attrs, spark_key,
