@@ -182,9 +182,11 @@ _CHROME_CSS = """
   box-shadow:0 2px 8px rgba(0,0,0,.25); }
 .fct .hdr-top { display:flex; align-items:center; gap:18px; flex-wrap:wrap; }
 /* App title lockup. The 1px tracking here is deliberate branding on the title
-   itself; the subtitle is distinguished by size and colour, not weight. */
+   itself; the subtitle inherits every font property (family, size, weight and
+   tracking) so the two halves are literally the same type, and is set apart by
+   COLOUR alone. */
 .fct .logo { font-size:24px; font-weight:400; letter-spacing:1px; color:#fff; line-height:1; }
-.fct .logo span { color:#7a99c0; font-size:15px; font-weight:400; letter-spacing:.2px; }
+.fct .logo span { color:#7a99c0; }
 /* wrap + row-gap so the 4th field (DATA PULLED) drops to a second line on a
    narrow viewport instead of overflowing the header card. */
 .fct .hdr-meta { margin-left:auto; display:flex; gap:26px; row-gap:10px; flex-wrap:wrap;
