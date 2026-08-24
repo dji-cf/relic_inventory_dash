@@ -147,10 +147,13 @@ def default_descending(s: pd.Series) -> bool:
 
     Numbers read best biggest-first (a $ or QTY column), text reads best A-Z.
     Categorical dtypes hold strings here (see data.load_history), so they count
-    as text even though pandas may store integer codes.
+    as text even though pandas may store integer codes. DATES read best newest
+    first, which is the same instinct as numbers.
     """
     if isinstance(s.dtype, pd.CategoricalDtype):
         return False
+    if pd.api.types.is_datetime64_any_dtype(s):
+        return True
     return bool(pd.api.types.is_numeric_dtype(s))
 
 
@@ -173,7 +176,11 @@ def sort_frame(df, spec, *, sparks=None, spark_key=None, pin_other_col=None):
     if s is None:
         return df
     asc = direction != "desc"
-    if isinstance(s.dtype, pd.CategoricalDtype) or not pd.api.types.is_numeric_dtype(s):
+    # datetimes are already ordered — stringifying them would work only by ISO
+    # accident, so they skip the text branch and sort natively
+    if not pd.api.types.is_datetime64_any_dtype(s) and (
+            isinstance(s.dtype, pd.CategoricalDtype)
+            or not pd.api.types.is_numeric_dtype(s)):
         # str(NaN) == "nan", which would sort among real values — mask the blanks
         # back to NaN (taken from the resolved series, not the frame) so
         # na_position still sinks them in BOTH directions.
@@ -382,6 +389,35 @@ def items_for(df, brand, subject) -> pd.DataFrame:
            .drop(columns="_itv")
            .reset_index(drop=True))
     return out[cols]
+
+
+RECEIPT_COLS = ["receipt_month", "item_number", "item_description",
+                "relic_form_type", "item_used_status", "qty_received",
+                "qty_onhand", "is_onhand"]
+
+
+def receipts_for(df, brand, subject, onhand_only: bool = False) -> pd.DataFrame:
+    """Receipt-month grain procurement receipts for one brand+subject.
+
+    One row per (item, receipt month): an item received in three different months
+    shows three rows, because that is what a receipt list is for. Sorted newest
+    receipt first, then item, so the most recent arrivals lead.
+
+    ``onhand_only`` narrows to items still in stock. The unfiltered frame is the
+    wider "ever received" universe and therefore includes items the on-hand tabs
+    cannot show at all -- that gap is the whole reason this view exists.
+
+    ``qty_onhand`` is the item's CURRENT total repeated on each of its rows (see
+    queries.receipts_sql); it is not additive down the column.
+    """
+    g = df[(df["brand"] == brand) & (df["subject_name"] == subject)]
+    if onhand_only:
+        g = g[g["is_onhand"]]
+    if g.empty:
+        return pd.DataFrame(columns=RECEIPT_COLS)
+    return (g.sort_values(["receipt_month", "item_number"],
+                          ascending=[False, True])
+            .reset_index(drop=True)[RECEIPT_COLS])
 
 
 def program_breakdown(df, brand, subject) -> pd.DataFrame:

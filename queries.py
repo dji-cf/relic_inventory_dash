@@ -306,3 +306,88 @@ FROM bins_hist b
 JOIN item_qty_hist iq ON iq.month_start = b.month_start AND iq.ITEM_NUMBER = b.ITEM_NUMBER
 LEFT JOIN val_hist v  ON v.month_start = b.month_start AND v.ITEM_NUMBER = b.ITEM_NUMBER
 """
+
+
+# ── receipts (procurement) ────────────────────────────────────────────────────
+# Feeds the RECEIPTS drill at player level: what arrived, when, for one subject.
+#
+# GRAIN: one row per (item x receipt month). 34% of items are received across
+# more than one month, so collapsing to one row per item would silently hide
+# re-receipts (99,324 items -> 174,127 item-month rows).
+#
+# UNIVERSE: every item EVER received up to as_of, including items since fully
+# consumed. That is deliberately wider than onhand_sql, which is gated on an
+# INNER JOIN to FCT_INVENTORY_AGING and therefore only ever shows what is still
+# on hand. `is_onhand` carries the distinction so the view can filter to current
+# stock without a second query.
+#
+# RECEIPT DATE is TXN_DATE. Be aware what that column actually is: it holds 16
+# distinct values over 2025-05..2026-08, every one the FIRST OF A MONTH. It is a
+# monthly period stamp, so receipt date has MONTH precision only -- there is no
+# day component to render. The only day-level receipt date in the account is
+# FCT_INVENTORY_AGING.RECEIPT_DATE, which was rejected for this view because it
+# has no row for consumed items. Two further consequences worth knowing:
+#   * 42% of items first appear in the earliest month (2025-05-01), which is a
+#     FLOOR, not a real arrival -- all Oracle history in Snowflake starts then.
+#     style.receipt_date_label renders that month as "<= May 2025".
+#   * receipts predating 2025-05 are not in Snowflake at all, from any source.
+#
+# QTY > 0 is the whole receipt filter: INTERNAL_TRANSFER and TXNS are empty on
+# every positive row in this view, so there is no transfer/procurement split to
+# apply. Negative rows live in CON_VIEW (consumption) and are used here only to
+# compute the net on-hand position.
+def receipts_sql(as_of: str) -> str:
+    """Build the receipts SQL for ``as_of`` (YYYY-MM-DD).
+
+    The as-of date is embedded as a literal for the same cache-key reason as
+    ``onhand_sql`` -- see the note above it.
+    """
+    if not _AS_OF_RE.match(as_of):
+        raise ValueError(f"as_of must be YYYY-MM-DD, got {as_of!r}")
+    d = f"TO_DATE('{as_of}')"
+    return f"""
+WITH pos AS (
+    -- receipt lines only; TRY_TO_DECIMAL because QTY is VARCHAR (as onhand_sql)
+    SELECT ITEM_NUMBER, SUBJECT_NAME, BRAND, TEAM, RELIC_FORM_TYPE,
+           ITEM_USED_STATUS, ITEM_DESCRIPTION,
+           TXN_DATE                                   AS receipt_month,
+           TRY_TO_DECIMAL(QTY::string, 38, 4)         AS qty
+    FROM {REC_VIEW}
+    WHERE TXN_DATE <= {d}
+      AND TRY_TO_DECIMAL(QTY::string, 38, 4) > 0
+),
+net AS (
+    -- net position across receipts + consumption, mirroring onhand_sql's bins
+    -- rule but at ITEM grain (this view has no bin/locator dimension)
+    SELECT ITEM_NUMBER, SUM(qty) AS qty_onhand
+    FROM (
+        SELECT ITEM_NUMBER, TRY_TO_DECIMAL(QTY::string, 38, 4) AS qty
+        FROM {REC_VIEW} WHERE TXN_DATE <= {d}
+        UNION ALL
+        SELECT ITEM_NUMBER, TRY_TO_DECIMAL(QTY::string, 38, 4)
+        FROM {CON_VIEW} WHERE TXN_DATE <= {d}
+    )
+    GROUP BY 1
+    HAVING SUM(qty) > 0
+)
+SELECT
+    p.receipt_month                                                 AS receipt_month,
+    COALESCE(NULLIF(TRIM(p.ITEM_NUMBER), ''), 'OTHER')              AS item_number,
+    MAX(p.ITEM_DESCRIPTION)                                         AS item_description,
+    COALESCE(NULLIF(TRIM(p.SUBJECT_NAME), ''), 'OTHER')             AS subject_name,
+    -- UPPER on brand/team/type/used-status matches onhand_sql exactly, so the
+    -- brand+subject drill keys and the global filter values line up across views
+    UPPER(COALESCE(NULLIF(TRIM(p.BRAND), ''), 'OTHER'))             AS brand,
+    UPPER(COALESCE(NULLIF(TRIM(p.TEAM), ''), ''))                   AS team,
+    UPPER(COALESCE(NULLIF(TRIM(p.RELIC_FORM_TYPE), ''), 'OTHER'))   AS relic_form_type,
+    UPPER(COALESCE(NULLIF(TRIM(p.ITEM_USED_STATUS), ''), ''))       AS item_used_status,
+    SUM(p.qty)                                                      AS qty_received,
+    -- NOTE: qty_onhand is the item's CURRENT total, repeated on every one of its
+    -- receipt-month rows. It must never be summed down the column -- the receipt
+    -- table footer deliberately leaves it blank for that reason.
+    COALESCE(MAX(n.qty_onhand), 0)                                  AS qty_onhand,
+    IFF(MAX(n.ITEM_NUMBER) IS NULL, FALSE, TRUE)                    AS is_onhand
+FROM pos p
+LEFT JOIN net n ON n.ITEM_NUMBER = p.ITEM_NUMBER
+GROUP BY p.receipt_month, 2, 4, 5, 6, 7, 8
+"""

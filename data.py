@@ -183,6 +183,40 @@ def load_history() -> pd.DataFrame:
     return df
 
 
+@st.cache_data(ttl=timedelta(hours=2), show_spinner="Loading receipts…")
+def load_receipts(as_of: str) -> pd.DataFrame:
+    """Item x receipt-month procurement receipts up to ``as_of`` (YYYY-MM-DD).
+
+    Feeds the RECEIPTS drill at player level. Loaded LAZILY -- callers must only
+    invoke this from inside that panel, never on first paint, exactly like
+    ``load_history``.
+
+    Deliberately a WIDER universe than ``load_onhand``: it covers every item ever
+    received, including items since fully consumed, which the on-hand snapshot
+    cannot show (it is gated on an INNER JOIN to FCT_INVENTORY_AGING). The
+    ``is_onhand`` flag carries that distinction so the panel's "On-hand only"
+    toggle needs no second query.
+
+    ``receipt_month`` is a real Timestamp but carries MONTH precision only --
+    TXN_DATE is a monthly period stamp. See queries.receipts_sql for why, and
+    style.receipt_date_label for how that is rendered honestly.
+    """
+    df = _connection().query(
+        queries.receipts_sql(as_of),  # date embedded in SQL text (see receipts_sql)
+        ttl=timedelta(hours=2),
+    )
+    df.columns = [c.lower() for c in df.columns]
+    df["receipt_month"] = pd.to_datetime(df["receipt_month"], errors="coerce")
+    for c in ("qty_received", "qty_onhand"):
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    df["is_onhand"] = df["is_onhand"].astype(bool)
+    # blank rather than NaN so display and substring search never see a NaN
+    for c in ("item_number", "item_description", "subject_name", "brand", "team",
+              "relic_form_type", "item_used_status"):
+        df[c] = df[c].fillna("").astype(str).str.strip()
+    return df
+
+
 def history_matches_snapshot(hist, onhand, as_of, tol: float = 1.0) -> bool:
     """True if ``hist`` reconciles to ``onhand`` at ``as_of`` (valuation total).
 

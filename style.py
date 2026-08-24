@@ -927,3 +927,81 @@ def item_table_html(items, sort=None) -> str:
     )
     return ('<div class="table-wrap"><table class="t-item"><thead>' + head
             + "</thead><tbody>" + body + "</tbody><tfoot>" + foot + "</tfoot></table></div>")
+
+
+# ── receipts ──────────────────────────────────────────────────────────────────
+# (header, frame field). Sorting is on the real field, so RECEIPT DATE orders by
+# the underlying Timestamp rather than the rendered label.
+_RECEIPT_COLS = [
+    ("Receipt date", "receipt_month"),
+    ("Item #", "item_number"),
+    ("Description", "item_description"),
+    ("Type", "relic_form_type"),
+    ("Used status", "item_used_status"),
+    ("Qty received", "qty_received"),
+    ("Qty on hand", "qty_onhand"),
+]
+_RECEIPT_NUM_FIELDS = {"qty_received", "qty_onhand"}
+
+# Earliest month present in the source. Everything Oracle has loaded into
+# Snowflake starts here, so an item whose first receipt lands in this month was
+# received ON OR BEFORE it -- the true date is simply not in the warehouse. 42%
+# of items sit here, which is far too many to render as though it were a real
+# arrival date.
+RECEIPT_FLOOR_MONTH = pd.Timestamp("2025-05-01")
+
+
+def receipt_date_label(value) -> str:
+    """Render a receipt month honestly.
+
+    TXN_DATE is a monthly period stamp -- every value is the first of a month --
+    so this prints a MONTH ("Jul 2026") and never a day. Printing "07/01/2026"
+    would assert a precision the column does not carry. The floor month is
+    prefixed with "<=" because those receipts happened on or before it.
+    """
+    if pd.isna(value):
+        return "—"
+    ts = pd.Timestamp(value)
+    label = ts.strftime("%b %Y")
+    return f"\u2264 {label}" if ts <= RECEIPT_FLOOR_MONTH else label
+
+
+def receipt_table_html(rec, sort=None) -> str:
+    """Item x receipt-month procurement receipts for one player."""
+    ncols = len(_RECEIPT_COLS)
+    head = "<tr>" + "".join(
+        _th(h, "c-num" if field in _RECEIPT_NUM_FIELDS else "", field, sort)
+        for h, field in _RECEIPT_COLS
+    ) + "</tr>"
+    rows = []
+    for _, r in rec.iterrows():
+        desc = r["item_description"]
+        desc_txt = "—" if pd.isna(desc) or not str(desc) else str(desc)
+        # a depleted item is dimmed rather than hidden: it was still received
+        onhand_txt = fmtq(r["qty_onhand"]) if r["is_onhand"] else "—"
+        rows.append(
+            "<tr>"
+            f'<td>{escape(receipt_date_label(r["receipt_month"]))}</td>'
+            f'<td>{escape(str(r["item_number"]))}</td>'
+            f'<td class="td-desc" title="{escape(desc_txt)}">{escape(desc_txt)}</td>'
+            f'<td style="text-align:left">'
+            f'{escape(display_dim("relic_form_type", r["relic_form_type"]) or "—")}</td>'
+            f'<td style="text-align:left">'
+            f'{escape(display_dim("item_used_status", r["item_used_status"]) or "—")}</td>'
+            f'<td class="c-num">{fmtq(r["qty_received"])}</td>'
+            f'<td class="c-num">{onhand_txt}</td></tr>'
+        )
+    # Only QTY RECEIVED is summed. QTY ON HAND is the item's current total
+    # repeated on every receipt-month row, so a column sum would multiply-count
+    # any item received in more than one month (34% of them) -- left blank.
+    tq = rec["qty_received"].sum() if not rec.empty else 0
+    foot = (
+        f'<tr class="tfoot-row"><td colspan="{ncols - 2}">Total (filtered)</td>'
+        f'<td class="c-num">{fmtq(tq)}</td><td class="c-num"></td></tr>'
+    )
+    body = "".join(rows) or (
+        f'<tr><td colspan="{ncols}" style="text-align:center;color:var(--muted);'
+        'padding:30px">No receipts found.</td></tr>'
+    )
+    return ('<div class="table-wrap"><table class="t-item"><thead>' + head
+            + "</thead><tbody>" + body + "</tbody><tfoot>" + foot + "</tfoot></table></div>")

@@ -123,11 +123,11 @@ for _k in ("status", "view", "tab", "drill_mode", "pivot_cols",
            "trend_dim", "trend_metric", "stale_status"):  # remember last good selection
     ss.setdefault(f"_{_k}_last", ss[_k])
 for _k in ("pivot_rows", "subj_rows", "prog_rows", "item_rows",
-           "movers_rows", "stale_rows"):  # per-table rows-per-view default
+           "movers_rows", "stale_rows", "receipt_rows"):  # per-table rows-per-view default
     ss.setdefault(_k, 25)
 # Click-to-sort state, one entry per custom table: None (default ranking) or
 # (sort_key, "asc"|"desc"). Set by header clicks; see _apply_sort.
-for _k in ("sort_pivot", "sort_subj", "sort_prog", "sort_item"):
+for _k in ("sort_pivot", "sort_subj", "sort_prog", "sort_item", "sort_receipt"):
     ss.setdefault(_k, None)
 
 
@@ -410,10 +410,8 @@ def render_inventory():
     subs = tx.subject_rollup(sub_src)
     show_brand = ss.view != "BY BRAND / SPORT"
 
-    if status_code == "S":
-        st.segmented_control("Subject drill", ["ITEMS", "BY PROGRAM"], key="drill_mode",
-                             format_func=_label,
-                             on_change=_sticky, args=("drill_mode",))
+    # The player-level mode control lives further down, inside the drill block —
+    # it only means anything once a player is chosen.
 
     # union count + per-type counts (subjects with items in several types are in
     # each type's count but once in the union, so the parts can exceed the total)
@@ -469,7 +467,26 @@ def render_inventory():
         return
     brand_v, subj_v = subj_sel.split(" — ", 1)
 
-    if status_code == "S" and ss.drill_mode == "BY PROGRAM":
+    # ── player-level mode control ──
+    # Rendered here, not above the subject list, because it only has meaning once
+    # a player is selected. BY PROGRAM is slated-only (its rows are the slated
+    # program split); RECEIPTS is always available.
+    modes = ["ITEMS", "BY PROGRAM", "RECEIPTS"] if status_code == "S" \
+        else ["ITEMS", "RECEIPTS"]
+    if ss.drill_mode not in modes:
+        # a sticky BY PROGRAM from a previous Slated visit must not strand the
+        # panel on an option this status does not offer. _sticky's memory needs
+        # the same treatment or deselecting would restore the invalid value.
+        ss["drill_mode"] = "ITEMS"
+    if ss.get("_drill_mode_last") not in modes:
+        ss["_drill_mode_last"] = "ITEMS"
+    st.segmented_control("Player drill", modes, key="drill_mode",
+                         format_func=_label,
+                         on_change=_sticky, args=("drill_mode",))
+
+    if ss.drill_mode == "RECEIPTS":
+        _render_receipts(brand_v, subj_v)
+    elif status_code == "S" and ss.drill_mode == "BY PROGRAM":
         # nested program table keeps the legacy TYPES layout (rows are slated-only,
         # so STATUS/AGE columns would be redundant there)
         prog = tx.program_breakdown(sub_src, brand_v, subj_v)
@@ -539,6 +556,83 @@ def render_inventory():
             max_height=_cap_px(ss.item_rows))
         if item_ev.sort:
             _toggle_sort("sort_item", item_ev.sort, items)
+
+
+def _render_receipts(brand_v: str, subj_v: str):
+    """RECEIPTS panel: what arrived for this player, and when.
+
+    Its universe is EVERY item ever received up to the as-of month, which is
+    deliberately wider than the rest of the dashboard — the on-hand tabs cannot
+    show an item that has since been fully consumed. The "On-hand only" toggle
+    narrows it to current stock, scoped to this panel alone.
+
+    The global Status and Sub-Inventory filters are NOT applied here and cannot
+    be: both describe where stock sits *now*, which is undefined for an item no
+    longer held. Brand / Team / Type / Used Status all live on the receipt rows
+    themselves and are applied. The caption states this so the numbers are never
+    mistaken for filtered ones.
+    """
+    rec_all = data.load_receipts(ss.as_of)  # lazy: only loaded inside this panel
+    # attribute filters that genuinely exist on a receipt row
+    if g_team:
+        rec_all = rec_all[rec_all["team"] == g_team]
+    if g_ft:
+        rec_all = rec_all[rec_all["relic_form_type"] == g_ft]
+    if g_us:
+        rec_all = rec_all[rec_all["item_used_status"] == g_us]
+
+    r1, r2, r3 = st.columns([3, 0.8, 1])
+    onhand_only = r1.checkbox("On-hand only", key="receipt_onhand_only",
+                              help="Limit to items still in stock. Off shows "
+                                   "everything ever received, including items "
+                                   "since fully consumed.")
+    rec = tx.receipts_for(rec_all, brand_v, subj_v, onhand_only=onhand_only)
+    n_items = rec["item_number"].nunique()
+    r1.html(style.open_fct() + style.panel_title_html(
+        f"{style.display_dim('subject_name', subj_v)} — receipts",
+        f"{tx.fmtq(n_items)} items · {tx.fmtq(len(rec))} receipts")
+        + style.close_fct())
+    rq = r1.text_input("Filter receipts", key="receipt_search",
+                       placeholder="Filter by item # or description…",
+                       label_visibility="collapsed")
+    _rows_select(r2, "receipt_rows")
+    if rq:
+        rec = rec[
+            rec["item_number"].str.contains(rq, case=False, na=False)
+            | rec["item_description"].astype(str).str.contains(rq, case=False, na=False)
+        ]
+    rec = _apply_sort("sort_receipt", rec)
+
+    export_df = (
+        rec.assign(subject=subj_v, brand=brand_v,
+                   receipt_date=rec["receipt_month"].map(style.receipt_date_label),
+                   on_hand=rec["is_onhand"].map({True: "Yes", False: "No"}))
+        [["receipt_date", "item_number", "item_description", "subject", "brand",
+          "relic_form_type", "item_used_status", "qty_received", "qty_onhand",
+          "on_hand"]]
+        .rename(columns={
+            "receipt_date": "Receipt Date", "item_number": "Item #",
+            "item_description": "Description", "subject": "Subject",
+            "brand": "Brand", "relic_form_type": "Type",
+            "item_used_status": "Used Status", "qty_received": "Qty Received",
+            "qty_onhand": "Qty On Hand", "on_hand": "Still On Hand"})
+    )
+    r3.download_button("⬇ Export XLS", to_excel(export_df),
+                       file_name=f"relic_receipts_{brand_v}_{subj_v}.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       width="stretch")
+    st.caption("Receipt date comes from the source TXN_DATE, which is stamped by "
+               "MONTH — there is no day component to show. Receipts on or before "
+               f"{style.RECEIPT_FLOOR_MONTH.strftime('%b %Y')} read “≤” because "
+               "that is where Oracle history in Snowflake begins; the true date "
+               "is earlier and not loaded. Status and Sub-Inventory filters don't "
+               "apply here, since items no longer held have neither.")
+
+    rec_ev = interactive.table(
+        style.receipt_table_html(rec, sort=ss.get("sort_receipt")),
+        key="receipt_tbl", max_height=_cap_px(ss.receipt_rows))
+    if rec_ev.sort:
+        _toggle_sort("sort_receipt", rec_ev.sort, rec)
 
 
 def render_trends():
