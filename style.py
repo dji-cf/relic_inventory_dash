@@ -949,21 +949,32 @@ _RECEIPT_NUM_FIELDS = {"qty_received", "qty_onhand"}
 # of items sit here, which is far too many to render as though it were a real
 # arrival date.
 RECEIPT_FLOOR_MONTH = pd.Timestamp("2025-05-01")
+# The opening-balance load ran on this day (INV_MATERIAL_TXNS transaction type
+# 300000004289506, all 48,724 lines dated 2025-05-30), which is what the floor
+# month actually represents. Shown with a "<=" because those units existed
+# BEFORE the Oracle cutover; their real arrival dates were never loaded.
+RECEIPT_FLOOR_LABEL = "\u2264 05/30/2025"
 
 
 def receipt_date_label(value) -> str:
-    """Render a receipt month honestly.
+    """Render a receipt date as MM/DD/YYYY.
 
-    TXN_DATE is a monthly period stamp -- every value is the first of a month --
-    so this prints a MONTH ("Jul 2026") and never a day. Printing "07/01/2026"
-    would assert a precision the column does not carry. The floor month is
-    prefixed with "<=" because those receipts happened on or before it.
+    NOTE ON PRECISION: the source TXN_DATE is a monthly period stamp -- all 16
+    distinct values across 1.77M rows are the FIRST of a month, pairing 1:1 with
+    PERIOD_NAME. So the day printed here is always "01"; it is the period, not
+    the day the goods physically arrived. Maya asked for the day exposed in this
+    format anyway, having been shown that. A genuine day-level receipt date does
+    exist in INV_MATERIAL_TXNS (transaction type 41 / source 6, PO receipts) but
+    is not what this view reads.
+
+    The floor month renders as RECEIPT_FLOOR_LABEL instead -- see above.
     """
     if pd.isna(value):
         return "—"
     ts = pd.Timestamp(value)
-    label = ts.strftime("%b %Y")
-    return f"\u2264 {label}" if ts <= RECEIPT_FLOOR_MONTH else label
+    if ts <= RECEIPT_FLOOR_MONTH:
+        return RECEIPT_FLOOR_LABEL
+    return ts.strftime("%m/%d/%Y")
 
 
 def receipt_table_html(rec, sort=None) -> str:

@@ -622,11 +622,12 @@ def _render_receipts(brand_v: str, subj_v: str):
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                        width="stretch")
     st.caption("Receipt date comes from the source TXN_DATE, which is stamped by "
-               "MONTH — there is no day component to show. Receipts on or before "
-               f"{style.RECEIPT_FLOOR_MONTH.strftime('%b %Y')} read “≤” because "
-               "that is where Oracle history in Snowflake begins; the true date "
-               "is earlier and not loaded. Status and Sub-Inventory filters don't "
-               "apply here, since items no longer held have neither.")
+               "ACCOUNTING PERIOD — so the day always reads 01 and marks the "
+               "month, not the day the goods arrived. Rows reading "
+               f"“{style.RECEIPT_FLOOR_LABEL}” are the opening-balance load: those "
+               "units pre-date Oracle in Snowflake, so their true arrival date "
+               "was never captured. Status and Sub-Inventory filters don't apply "
+               "here, since items no longer held have neither.")
 
     rec_ev = interactive.table(
         style.receipt_table_html(rec, sort=ss.get("sort_receipt")),
