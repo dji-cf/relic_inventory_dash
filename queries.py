@@ -351,7 +351,10 @@ WITH pos AS (
     SELECT ITEM_NUMBER, SUBJECT_NAME, BRAND, TEAM, RELIC_FORM_TYPE,
            ITEM_USED_STATUS, ITEM_DESCRIPTION,
            TXN_DATE                                   AS receipt_month,
-           TRY_TO_DECIMAL(QTY::string, 38, 4)         AS qty
+           TRY_TO_DECIMAL(QTY::string, 38, 4)         AS qty,
+           -- UNIT_COST is NUMBER and never NULL on a positive line (0 on ~19% of
+           -- them, which is real -- donated / zero-valued relics)
+           UNIT_COST                                  AS unit_cost
     FROM {REC_VIEW}
     WHERE TXN_DATE <= {d}
       AND TRY_TO_DECIMAL(QTY::string, 38, 4) > 0
@@ -382,6 +385,17 @@ SELECT
     UPPER(COALESCE(NULLIF(TRIM(p.RELIC_FORM_TYPE), ''), 'OTHER'))   AS relic_form_type,
     UPPER(COALESCE(NULLIF(TRIM(p.ITEM_USED_STATUS), ''), ''))       AS item_used_status,
     SUM(p.qty)                                                      AS qty_received,
+    -- Value of what was RECEIVED, derived as qty x unit cost.
+    --
+    -- Deliberately NOT the source AMOUNT column. AMOUNT in this extract is the
+    -- on-hand VALUATION of the item/subinventory at that period -- verified: on
+    -- the 39,944 lines where the two formulas differ it matches
+    -- QUANTITY_ONHAND * UNIT_COST 78% of the time and QTY * UNIT_COST only 21%,
+    -- and a balance-only row (QTY 0) still carries a full AMOUNT. Summing it
+    -- would report a running balance as though it were money spent on arrivals,
+    -- and would multiply-count across months. This derivation is additive, so
+    -- the receipt table footer can legitimately total it.
+    SUM(p.qty * p.unit_cost)                                        AS amt_received,
     -- NOTE: qty_onhand is the item's CURRENT total, repeated on every one of its
     -- receipt-month rows. It must never be summed down the column -- the receipt
     -- table footer deliberately leaves it blank for that reason.

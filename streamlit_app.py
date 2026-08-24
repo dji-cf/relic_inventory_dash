@@ -609,13 +609,14 @@ def _render_receipts(brand_v: str, subj_v: str):
                    on_hand=rec["is_onhand"].map({True: "Yes", False: "No"}))
         [["receipt_date", "item_number", "item_description", "subject", "brand",
           "relic_form_type", "item_used_status", "qty_received", "qty_onhand",
-          "on_hand"]]
+          "amt_received", "on_hand"]]
         .rename(columns={
             "receipt_date": "Receipt Date", "item_number": "Item #",
             "item_description": "Description", "subject": "Subject",
             "brand": "Brand", "relic_form_type": "Type",
             "item_used_status": "Used Status", "qty_received": "Qty Received",
-            "qty_onhand": "Qty On Hand", "on_hand": "Still On Hand"})
+            "qty_onhand": "Qty On Hand", "amt_received": "Amount",
+            "on_hand": "Still On Hand"})
     )
     r3.download_button("⬇ Export XLS", to_excel(export_df),
                        file_name=f"relic_receipts_{brand_v}_{subj_v}.xlsx",
@@ -626,8 +627,11 @@ def _render_receipts(brand_v: str, subj_v: str):
                "month, not the day the goods arrived. Rows reading "
                f"“{style.RECEIPT_FLOOR_LABEL}” are the opening-balance load: those "
                "units pre-date Oracle in Snowflake, so their true arrival date "
-               "was never captured. Status and Sub-Inventory filters don't apply "
-               "here, since items no longer held have neither.")
+               "was never captured. Amount is the value of the units received "
+               "(qty × unit cost); the source AMOUNT column is an on-hand balance "
+               "rather than a receipt value, so it is not used here. Status and "
+               "Sub-Inventory filters don't apply, since items no longer held "
+               "have neither.")
 
     rec_ev = interactive.table(
         style.receipt_table_html(rec, sort=ss.get("sort_receipt")),

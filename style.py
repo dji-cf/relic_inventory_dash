@@ -940,8 +940,10 @@ _RECEIPT_COLS = [
     ("Used status", "item_used_status"),
     ("Qty received", "qty_received"),
     ("Qty on hand", "qty_onhand"),
+    # money LAST, like Valuation in the item grid and Total value in the pivots
+    ("Amount", "amt_received"),
 ]
-_RECEIPT_NUM_FIELDS = {"qty_received", "qty_onhand"}
+_RECEIPT_NUM_FIELDS = {"qty_received", "qty_onhand", "amt_received"}
 
 # Earliest month present in the source. Everything Oracle has loaded into
 # Snowflake starts here, so an item whose first receipt lands in this month was
@@ -981,7 +983,10 @@ def receipt_table_html(rec, sort=None) -> str:
     """Item x receipt-month procurement receipts for one player."""
     ncols = len(_RECEIPT_COLS)
     head = "<tr>" + "".join(
-        _th(h, "c-num" if field in _RECEIPT_NUM_FIELDS else "", field, sort)
+        _th(h, " ".join(c for c in (
+                "th-total" if h == "Amount" else "",
+                "c-num" if field in _RECEIPT_NUM_FIELDS else "") if c),
+            field, sort)
         for h, field in _RECEIPT_COLS
     ) + "</tr>"
     rows = []
@@ -1000,15 +1005,19 @@ def receipt_table_html(rec, sort=None) -> str:
             f'<td style="text-align:left">'
             f'{escape(display_dim("item_used_status", r["item_used_status"]) or "—")}</td>'
             f'<td class="c-num">{fmtq(r["qty_received"])}</td>'
-            f'<td class="c-num">{onhand_txt}</td></tr>'
+            f'<td class="c-num">{onhand_txt}</td>'
+            f'<td class="c-num td-total">{fmt(r["amt_received"])}</td></tr>'
         )
-    # Only QTY RECEIVED is summed. QTY ON HAND is the item's current total
-    # repeated on every receipt-month row, so a column sum would multiply-count
-    # any item received in more than one month (34% of them) -- left blank.
+    # Only QTY RECEIVED and AMOUNT are summed -- both describe what arrived, so
+    # both are additive. QTY ON HAND is the item's current total repeated on every
+    # receipt-month row, so a column sum would multiply-count any item received in
+    # more than one month (34% of them) -- left blank.
     tq = rec["qty_received"].sum() if not rec.empty else 0
+    ta = rec["amt_received"].sum() if not rec.empty else 0
     foot = (
-        f'<tr class="tfoot-row"><td colspan="{ncols - 2}">Total (filtered)</td>'
-        f'<td class="c-num">{fmtq(tq)}</td><td class="c-num"></td></tr>'
+        f'<tr class="tfoot-row"><td colspan="{ncols - 3}">Total (filtered)</td>'
+        f'<td class="c-num">{fmtq(tq)}</td><td class="c-num"></td>'
+        f'<td class="c-num td-total">{fmt(ta)}</td></tr>'
     )
     body = "".join(rows) or (
         f'<tr><td colspan="{ncols}" style="text-align:center;color:var(--muted);'

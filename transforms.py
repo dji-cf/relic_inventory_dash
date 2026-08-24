@@ -393,7 +393,7 @@ def items_for(df, brand, subject) -> pd.DataFrame:
 
 RECEIPT_COLS = ["receipt_month", "item_number", "item_description",
                 "relic_form_type", "item_used_status", "qty_received",
-                "qty_onhand", "is_onhand"]
+                "qty_onhand", "amt_received", "is_onhand"]
 
 
 def receipts_for(df, brand, subject, onhand_only: bool = False) -> pd.DataFrame:
