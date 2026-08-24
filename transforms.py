@@ -392,8 +392,8 @@ def items_for(df, brand, subject) -> pd.DataFrame:
 
 
 RECEIPT_COLS = ["receipt_month", "item_number", "item_description",
-                "relic_form_type", "item_used_status", "qty_received",
-                "qty_onhand", "total_value", "is_onhand"]
+                "relic_form_type", "team", "item_used_status", "qty_received",
+                "qty_onhand", "amt_received", "is_onhand"]
 
 
 def receipts_for(df, brand, subject, onhand_only: bool = False) -> pd.DataFrame:
@@ -407,9 +407,9 @@ def receipts_for(df, brand, subject, onhand_only: bool = False) -> pd.DataFrame:
     wider "ever received" universe and therefore includes items the on-hand tabs
     cannot show at all -- that gap is the whole reason this view exists.
 
-    ``qty_onhand`` and ``total_value`` are the item's CURRENT figures repeated on
-    each of its rows (see queries.receipts_sql); neither is additive down the
-    column.
+    ``qty_onhand`` is the item's CURRENT total repeated on each of its rows (see
+    queries.receipts_sql), so it is not additive down the column. ``amt_received``
+    IS additive -- it values what arrived (qty x unit cost).
     """
     g = df[(df["brand"] == brand) & (df["subject_name"] == subject)]
     if onhand_only:

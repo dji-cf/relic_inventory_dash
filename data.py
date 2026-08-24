@@ -207,7 +207,7 @@ def load_receipts(as_of: str) -> pd.DataFrame:
     )
     df.columns = [c.lower() for c in df.columns]
     df["receipt_month"] = pd.to_datetime(df["receipt_month"], errors="coerce")
-    for c in ("qty_received", "qty_onhand", "total_value"):
+    for c in ("qty_received", "qty_onhand", "amt_received"):
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
     df["is_onhand"] = df["is_onhand"].astype(bool)
     # blank rather than NaN so display and substring search never see a NaN

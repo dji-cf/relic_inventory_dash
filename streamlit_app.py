@@ -607,15 +607,18 @@ def _render_receipts(brand_v: str, subj_v: str):
         rec.assign(subject=subj_v, brand=brand_v,
                    receipt_date=rec["receipt_month"].map(style.receipt_date_label),
                    on_hand=rec["is_onhand"].map({True: "Yes", False: "No"}))
-        [["receipt_date", "item_number", "item_description", "subject", "brand",
-          "relic_form_type", "item_used_status", "qty_received", "qty_onhand",
-          "total_value", "on_hand"]]
+        # ordered to mirror the columns Mike asked for -- Receipt Date, Item
+        # Description, Item Type, Player, Team -- with our own detail after
+        [["receipt_date", "item_description", "relic_form_type", "subject",
+          "team", "item_number", "brand", "item_used_status", "qty_received",
+          "qty_onhand", "amt_received", "on_hand"]]
         .rename(columns={
-            "receipt_date": "Receipt Date", "item_number": "Item #",
-            "item_description": "Description", "subject": "Subject",
-            "brand": "Brand", "relic_form_type": "Type",
+            "receipt_date": "Receipt Date",
+            "item_description": "Item Description",
+            "relic_form_type": "Item Type", "subject": "Player",
+            "team": "Team", "item_number": "Item #", "brand": "Brand",
             "item_used_status": "Used Status", "qty_received": "Qty Received",
-            "qty_onhand": "Qty On Hand", "total_value": "Total Value",
+            "qty_onhand": "Qty On Hand", "amt_received": "Amount",
             "on_hand": "Still On Hand"})
     )
     r3.download_button("⬇ Export XLS", to_excel(export_df),
@@ -627,12 +630,10 @@ def _render_receipts(brand_v: str, subj_v: str):
                "month, not the day the goods arrived. Rows reading "
                f"“{style.RECEIPT_FLOOR_LABEL}” are the opening-balance load: those "
                "units pre-date Oracle in Snowflake, so their true arrival date "
-               "was never captured. Total value is the same per-item ITEM_INV_VALU "
-               "the INVENTORY tab uses; like Qty on hand it is the item's current "
-               "figure repeated on each of its receipt rows, so the footer totals "
-               "both over distinct items rather than down the column. Status and "
-               "Sub-Inventory filters don't apply, since items no longer held "
-               "have neither.")
+               "was never captured. Amount values what ARRIVED (qty × unit cost); "
+               "for what the player's stock is worth NOW, use Total value on the "
+               "INVENTORY tab. Status and Sub-Inventory filters don't apply, since "
+               "items no longer held have neither.")
 
     rec_ev = interactive.table(
         style.receipt_table_html(rec, sort=ss.get("sort_receipt")),
