@@ -940,10 +940,10 @@ _RECEIPT_COLS = [
     ("Used status", "item_used_status"),
     ("Qty received", "qty_received"),
     ("Qty on hand", "qty_onhand"),
-    # money LAST, like Valuation in the item grid and Total value in the pivots
-    ("Amount", "amt_received"),
+    # Total value LAST, matching the pivots and the item grid
+    ("Total value", "total_value"),
 ]
-_RECEIPT_NUM_FIELDS = {"qty_received", "qty_onhand", "amt_received"}
+_RECEIPT_NUM_FIELDS = {"qty_received", "qty_onhand", "total_value"}
 
 # Earliest month present in the source. Everything Oracle has loaded into
 # Snowflake starts here, so an item whose first receipt lands in this month was
@@ -984,7 +984,7 @@ def receipt_table_html(rec, sort=None) -> str:
     ncols = len(_RECEIPT_COLS)
     head = "<tr>" + "".join(
         _th(h, " ".join(c for c in (
-                "th-total" if h == "Amount" else "",
+                "th-total" if h == "Total value" else "",
                 "c-num" if field in _RECEIPT_NUM_FIELDS else "") if c),
             field, sort)
         for h, field in _RECEIPT_COLS
@@ -995,6 +995,7 @@ def receipt_table_html(rec, sort=None) -> str:
         desc_txt = "—" if pd.isna(desc) or not str(desc) else str(desc)
         # a depleted item is dimmed rather than hidden: it was still received
         onhand_txt = fmtq(r["qty_onhand"]) if r["is_onhand"] else "—"
+        val_txt = fmt(r["total_value"]) if r["is_onhand"] else "—"
         rows.append(
             "<tr>"
             f'<td>{escape(receipt_date_label(r["receipt_month"]))}</td>'
@@ -1006,18 +1007,28 @@ def receipt_table_html(rec, sort=None) -> str:
             f'{escape(display_dim("item_used_status", r["item_used_status"]) or "—")}</td>'
             f'<td class="c-num">{fmtq(r["qty_received"])}</td>'
             f'<td class="c-num">{onhand_txt}</td>'
-            f'<td class="c-num td-total">{fmt(r["amt_received"])}</td></tr>'
+            f'<td class="c-num td-total">{val_txt}</td></tr>'
         )
-    # Only QTY RECEIVED and AMOUNT are summed -- both describe what arrived, so
-    # both are additive. QTY ON HAND is the item's current total repeated on every
-    # receipt-month row, so a column sum would multiply-count any item received in
-    # more than one month (34% of them) -- left blank.
-    tq = rec["qty_received"].sum() if not rec.empty else 0
-    ta = rec["amt_received"].sum() if not rec.empty else 0
+    # QTY RECEIVED is additive, so it totals straight down the column.
+    #
+    # QTY ON HAND and TOTAL VALUE are not: both are the item's CURRENT figure
+    # repeated on every receipt-month row, so a plain column sum would
+    # multiply-count the 34% of items received in more than one month. They are
+    # totalled over DISTINCT items instead, which makes TOTAL VALUE reconcile to
+    # the same player's figure on the INVENTORY tab (both are ITEM_INV_VALU summed
+    # once per on-hand item).
+    if rec.empty:
+        tq = tqo = tv = 0
+    else:
+        tq = rec["qty_received"].sum()
+        per_item = rec.drop_duplicates(subset="item_number")
+        tqo = per_item.loc[per_item["is_onhand"], "qty_onhand"].sum()
+        tv = per_item.loc[per_item["is_onhand"], "total_value"].sum()
     foot = (
         f'<tr class="tfoot-row"><td colspan="{ncols - 3}">Total (filtered)</td>'
-        f'<td class="c-num">{fmtq(tq)}</td><td class="c-num"></td>'
-        f'<td class="c-num td-total">{fmt(ta)}</td></tr>'
+        f'<td class="c-num">{fmtq(tq)}</td>'
+        f'<td class="c-num">{fmtq(tqo)}</td>'
+        f'<td class="c-num td-total">{fmt(tv)}</td></tr>'
     )
     body = "".join(rows) or (
         f'<tr><td colspan="{ncols}" style="text-align:center;color:var(--muted);'

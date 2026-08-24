@@ -609,13 +609,13 @@ def _render_receipts(brand_v: str, subj_v: str):
                    on_hand=rec["is_onhand"].map({True: "Yes", False: "No"}))
         [["receipt_date", "item_number", "item_description", "subject", "brand",
           "relic_form_type", "item_used_status", "qty_received", "qty_onhand",
-          "amt_received", "on_hand"]]
+          "total_value", "on_hand"]]
         .rename(columns={
             "receipt_date": "Receipt Date", "item_number": "Item #",
             "item_description": "Description", "subject": "Subject",
             "brand": "Brand", "relic_form_type": "Type",
             "item_used_status": "Used Status", "qty_received": "Qty Received",
-            "qty_onhand": "Qty On Hand", "amt_received": "Amount",
+            "qty_onhand": "Qty On Hand", "total_value": "Total Value",
             "on_hand": "Still On Hand"})
     )
     r3.download_button("⬇ Export XLS", to_excel(export_df),
@@ -627,9 +627,10 @@ def _render_receipts(brand_v: str, subj_v: str):
                "month, not the day the goods arrived. Rows reading "
                f"“{style.RECEIPT_FLOOR_LABEL}” are the opening-balance load: those "
                "units pre-date Oracle in Snowflake, so their true arrival date "
-               "was never captured. Amount is the value of the units received "
-               "(qty × unit cost); the source AMOUNT column is an on-hand balance "
-               "rather than a receipt value, so it is not used here. Status and "
+               "was never captured. Total value is the same per-item ITEM_INV_VALU "
+               "the INVENTORY tab uses; like Qty on hand it is the item's current "
+               "figure repeated on each of its receipt rows, so the footer totals "
+               "both over distinct items rather than down the column. Status and "
                "Sub-Inventory filters don't apply, since items no longer held "
                "have neither.")
 

@@ -336,6 +336,15 @@ LEFT JOIN val_hist v  ON v.month_start = b.month_start AND v.ITEM_NUMBER = b.ITE
 # every positive row in this view, so there is no transfer/procurement split to
 # apply. Negative rows live in CON_VIEW (consumption) and are used here only to
 # compute the net on-hand position.
+#
+# TOTAL VALUE reuses onhand_sql's authoritative ITEM_INV_VALU so the figure
+# matches the INVENTORY tab exactly. Do NOT be tempted by this view's own AMOUNT
+# column: AMOUNT is QUANTITY_ONHAND * UNIT_COST, i.e. the valued BALANCE at that
+# period, not a receipt value -- on the 39,944 positive lines where the two
+# candidate formulas diverge it fits onhand*cost 78% of the time and qty*cost only
+# 21%, and a balance-only row (QTY 0) still carries a full AMOUNT (MVR231178
+# Aug-26: AMOUNT 64,800 = 135 * 480 with QTY 0). It is neither a receipt value nor
+# additive.
 def receipts_sql(as_of: str) -> str:
     """Build the receipts SQL for ``as_of`` (YYYY-MM-DD).
 
@@ -351,10 +360,7 @@ WITH pos AS (
     SELECT ITEM_NUMBER, SUBJECT_NAME, BRAND, TEAM, RELIC_FORM_TYPE,
            ITEM_USED_STATUS, ITEM_DESCRIPTION,
            TXN_DATE                                   AS receipt_month,
-           TRY_TO_DECIMAL(QTY::string, 38, 4)         AS qty,
-           -- UNIT_COST is NUMBER and never NULL on a positive line (0 on ~19% of
-           -- them, which is real -- donated / zero-valued relics)
-           UNIT_COST                                  AS unit_cost
+           TRY_TO_DECIMAL(QTY::string, 38, 4)         AS qty
     FROM {REC_VIEW}
     WHERE TXN_DATE <= {d}
       AND TRY_TO_DECIMAL(QTY::string, 38, 4) > 0
@@ -372,6 +378,18 @@ net AS (
     )
     GROUP BY 1
     HAVING SUM(qty) > 0
+),
+val AS (
+    -- The SAME authoritative per-item valuation the rest of the dashboard uses:
+    -- ITEM_INV_VALU for this period, used RAW (NUMBER(18,5), no TRY_TO_DECIMAL),
+    -- exactly as onhand_sql's `val` CTE. onhand_sql then allocates it across bins
+    -- by qty share, but those shares sum to 1, so the ITEM-grain total value is
+    -- ITEM_INV_VALU itself -- which is the grain this view needs. Verified unique
+    -- per (item, period): 99,325 rows / 99,325 distinct items, 0 duplicates, so
+    -- the join below cannot fan out.
+    SELECT ITEM_NUMBER, ITEM_INV_VALU
+    FROM {VAL_VIEW}
+    WHERE TO_DATE('01-' || PERIOD_NAME, 'DD-MON-YY') = {d}
 )
 SELECT
     p.receipt_month                                                 AS receipt_month,
@@ -385,23 +403,15 @@ SELECT
     UPPER(COALESCE(NULLIF(TRIM(p.RELIC_FORM_TYPE), ''), 'OTHER'))   AS relic_form_type,
     UPPER(COALESCE(NULLIF(TRIM(p.ITEM_USED_STATUS), ''), ''))       AS item_used_status,
     SUM(p.qty)                                                      AS qty_received,
-    -- Value of what was RECEIVED, derived as qty x unit cost.
-    --
-    -- Deliberately NOT the source AMOUNT column. AMOUNT in this extract is the
-    -- on-hand VALUATION of the item/subinventory at that period -- verified: on
-    -- the 39,944 lines where the two formulas differ it matches
-    -- QUANTITY_ONHAND * UNIT_COST 78% of the time and QTY * UNIT_COST only 21%,
-    -- and a balance-only row (QTY 0) still carries a full AMOUNT. Summing it
-    -- would report a running balance as though it were money spent on arrivals,
-    -- and would multiply-count across months. This derivation is additive, so
-    -- the receipt table footer can legitimately total it.
-    SUM(p.qty * p.unit_cost)                                        AS amt_received,
-    -- NOTE: qty_onhand is the item's CURRENT total, repeated on every one of its
-    -- receipt-month rows. It must never be summed down the column -- the receipt
-    -- table footer deliberately leaves it blank for that reason.
+    -- NOTE: qty_onhand and total_value are both the item's CURRENT figures,
+    -- repeated on every one of its receipt-month rows. Neither may be summed
+    -- down the column -- see style.receipt_table_html, which totals them over
+    -- DISTINCT items so the footer reconciles to the INVENTORY tab.
     COALESCE(MAX(n.qty_onhand), 0)                                  AS qty_onhand,
+    COALESCE(MAX(v.ITEM_INV_VALU), 0)                               AS total_value,
     IFF(MAX(n.ITEM_NUMBER) IS NULL, FALSE, TRUE)                    AS is_onhand
 FROM pos p
 LEFT JOIN net n ON n.ITEM_NUMBER = p.ITEM_NUMBER
+LEFT JOIN val v ON v.ITEM_NUMBER = p.ITEM_NUMBER
 GROUP BY p.receipt_month, 2, 4, 5, 6, 7, 8
 """
